@@ -13,7 +13,7 @@ front_z_pixel_change = np.load("front_z_pixel_change.npy")
 pixel_change = np.vstack((left_z_pixel_change, front_z_pixel_change, right_z_pixel_change)).mean(axis=0)
 
 # import rate change data   
-dat = pd.read_pickle("smooth_df_population_vector_change_with_other_variables.p")
+dat = pd.read_pickle("df_population_vector_change.p")
 
 # Clean the data (sequential data points are 1cm apart along trajectory)
 dat = dat[dat.environment == 'D']
