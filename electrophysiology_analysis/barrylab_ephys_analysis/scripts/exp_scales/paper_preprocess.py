@@ -946,16 +946,6 @@ def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=Fals
 
     fpaths = load.get_paths_to_animal_recordings_on_single_day(fpath, animal_id)
 
-    recordings = preprocess_animal_lfp_spectral_overview(
-        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
-        **kwargs
-    )
-
-    recordings = preprocess_animal_theta(
-        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
-        **kwargs
-    )
-
     recordings = compute_unit_autocorrelations_if_not_available(
         recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
         **kwargs
@@ -1000,6 +990,21 @@ def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=Fals
     )
 
     recordings = assign_unit_categories_if_not_available(
+        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
+        **kwargs
+    )
+
+    if save and not (recordings is None):
+        if verbose:
+            print('Saving intermediate results for animal {}'.format(animal_id))
+        recordings.save_analysis()
+
+    recordings = preprocess_animal_lfp_spectral_overview(
+        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
+        **kwargs
+    )
+
+    recordings = preprocess_animal_theta(
         recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
         **kwargs
     )
