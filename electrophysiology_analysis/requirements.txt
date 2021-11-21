@@ -32,7 +32,6 @@ idna==2.8
 imageio==2.5.0
 imagesize==1.1.0
 importlib-metadata==0.17
-ipdb==0.12
 ipykernel==5.4.3
 ipython==7.5.0
 ipython-genutils==0.2.0
