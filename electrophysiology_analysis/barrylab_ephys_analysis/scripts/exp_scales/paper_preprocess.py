@@ -20,6 +20,10 @@ from barrylab_ephys_analysis.spikes.correlograms import (create_correlation_bin_
 from barrylab_ephys_analysis.spatial.fields import detect_fields, compute_field_stability
 from barrylab_ephys_analysis.models.decoding import FlatPriorBayesPositionDecoding
 
+from barrylab_ephys_analysis.lfp.oscillations import (FrequencyBandAmplitude,
+                                                      FrequencyBandFrequency,
+                                                      FrequencyBandPhase)
+
 from barrylab_ephys_analysis.scripts.exp_scales import load
 from barrylab_ephys_analysis.scripts.exp_scales.params import Params
 from barrylab_ephys_analysis.scripts.exp_scales import snippets
@@ -771,6 +775,74 @@ class PositionDecoding(object):
         del recordings
 
 
+def preprocess_animal_theta(recordings=None, fpaths=None, recompute=False, verbose=True, **kwargs):
+
+    if recordings is None and fpaths is None:
+        raise ValueError('Either recordings or fpaths must be provided')
+
+    if fpaths is None:
+        fpaths = recordings.fpaths
+
+    if recompute:
+        data_available = [False]
+    else:
+        # Check if data is available in file
+        data_available = []
+        for fpath in fpaths:
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_amplitude'
+                )
+            )
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_phase'
+                )
+            )
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_frequency'
+                )
+            )
+
+    if all(data_available):
+        return recordings
+
+    if recordings is None:
+        recordings = load_recordings_and_correct_experiment_ids(fpaths, verbose=verbose, **kwargs)
+
+    if verbose:
+        print('Computing theta analog signals for animal {}'.format(recordings[0].info['animal']))
+
+    for recording in recordings:
+
+        channel_group_tetrodes = {channel_group: item['tetrode_nr']
+                                  for channel_group, item in recording.analysis['spectral_overview'].items()}
+
+        theta_amplitude = FrequencyBandAmplitude(recording, 'theta_amplitude',
+                                                 channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                                 **Params.theta_amplitude)
+
+        theta_phase = FrequencyBandPhase(recording, 'theta_phase',
+                                         channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                         **Params.theta_phase)
+
+        theta_frequency = FrequencyBandFrequency(recording, 'theta_frequency',
+                                                 channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                                 **Params.theta_frequency)
+
+        analog_signals = (theta_amplitude, theta_phase, theta_frequency)
+
+        for analog_signal in analog_signals:
+            analog_signal.compute(recompute=True)
+            analog_signal.add_to_recording()
+
+    return recordings
+
+
 def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=False, **kwargs):
     """Performs pre-processing all recordings of a single (first) day found at fpath for animal_id.
 
@@ -792,6 +864,11 @@ def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=Fals
     recordings = None
 
     fpaths = load.get_paths_to_animal_recordings_on_single_day(fpath, animal_id)
+
+    recordings = preprocess_animal_theta(
+        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
+        **kwargs
+    )
 
     recordings = compute_unit_autocorrelations_if_not_available(
         recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,

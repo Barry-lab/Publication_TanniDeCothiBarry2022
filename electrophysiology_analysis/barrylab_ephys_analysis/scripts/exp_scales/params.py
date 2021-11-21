@@ -139,3 +139,27 @@ class Params(object):
         },
         'cv_segment_size': 30 * 60 * 5,  # number of position samples
     }
+
+    # Theta frequency hilbert computation
+    theta_amplitude = {
+        'highpass_frequency': 7.0,
+        'lowpass_frequency': 11.0,
+        'filter_order': 2,
+        'temporal_smoothing_sigma': 0.1,
+    }
+
+    # Theta frequency hilbert computation
+    theta_phase = {
+        'highpass_frequency': 7.0,
+        'lowpass_frequency': 11.0,
+        'filter_order': 2,
+        'temporal_smoothing_sigma': 0.005,
+    }
+
+    # Theta frequency hilbert computation
+    theta_frequency = {
+        'highpass_frequency': 7.0,
+        'lowpass_frequency': 11.0,
+        'filter_order': 2,
+        'temporal_smoothing_sigma': 0.1,
+    }
