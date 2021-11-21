@@ -159,11 +159,6 @@ class Recording(object):
         self._task_settings = None
         self.load_task_settings()
 
-        # Load chewing signal if available
-        self._chewing_timestamps = None
-        self.load_chewing_if_available()
-
-
         # Create analysis dictionary for appending analysis results to recording
         self._analysis = Recording.__empty_analysis_dictionary()
 
@@ -250,10 +245,6 @@ class Recording(object):
     @property
     def task_settings(self):
         return self._task_settings
-
-    @property
-    def chewing_timestamps(self):
-        return self._chewing_timestamps
 
     @property
     def analysis(self):
@@ -636,21 +627,6 @@ class Recording(object):
         """Loads task settings into self.task_settings
         """
         self._task_settings = NWBio.load_settings(self.fpath, '/TaskSettings/')
-
-    def load_chewing_if_available(self):
-        """Loads chewing timestamps - TTL signal rise timestamps for channel specified in task settings
-        """
-
-        if self.task_settings is None and 'Chewing_TTLchan' in self.task_settings:
-            return
-
-        channel_event, timestamps = NWBio.load_open_ephys_generated_ttl_events(self.fpath)
-
-        if timestamps.size == 0:
-            return
-
-        self._chewing_timestamps = \
-            timestamps[channel_event == self.task_settings['Chewing_TTLchan']] - self.first_original_timestamp
 
     def get_smoothed_speed(self, size, method='gaussian'):
         """Returns smoothed speed.
