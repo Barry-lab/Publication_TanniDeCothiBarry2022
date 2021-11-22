@@ -305,6 +305,356 @@ class FieldDetectionMethod(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
+class FieldDetectionInRecordingHalves(object):
+
+    @staticmethod
+    def compute(all_recordings, df_units, df_fields):
+
+        # Create a copy of df_fields with only the relevant columns
+        df = df_fields[['unit', 'animal', 'animal_unit', 'animal_field', 'experiment_id']].copy(deep=True)
+        df = df.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
+                      how='left', on=['animal', 'animal_unit'])
+        df = df[df['category'] == 'place_cell']  # Only keep place cell fields
+        df = df[['unit', 'animal', 'animal_unit', 'animal_field', 'experiment_id']]
+
+        # Only keep fields not in exp_scales_a2
+        df = df[df['experiment_id'] != 'exp_scales_a2']
+
+        df = df.reset_index(drop=True)
+
+        df['full_rec_peak'] = np.nan
+        df['first_half_peak'] = np.nan
+        df['second_half_peak'] = np.nan
+        df['full_rec_coverage'] = np.nan
+        df['first_half_coverage'] = np.nan
+        df['second_half_coverage'] = np.nan
+
+        # Iterate over all fields and fill in DataFrame
+        for recordings in all_recordings:
+
+            recording_experiment_ids = [recording.info['experiment_id'] for recording in recordings]
+
+            for field in recordings[0].analysis['fields']:
+
+                idx = (
+                        (df['animal'] == field['properties']['animal'])
+                        & (df['animal_field'] == field['properties']['animal_field'])
+                )
+                matching_fields = np.sum(idx)
+                if matching_fields == 0:
+                    continue
+                elif matching_fields == 1:
+                    i_field = np.where(idx)[0][0]
+                else:
+                    raise Exception('Should not have more than one corresponding fields detected in DataFrame.')
+
+                i_recording = recording_experiment_ids.index(field['properties']['experiment_id'])
+
+                unit_data = recordings.units[field['properties']['animal_unit']][i_recording]
+                full_rec_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_smoothed']
+                first_half_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_halves']['first']
+                second_half_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_halves']['second']
+
+                field_mask = ~np.isnan(field['ratemap'])
+                field_spatial_bin_count = np.sum(field_mask)
+
+                full_rec_coverage = \
+                    np.sum(~np.isnan(full_rec_ratemap[field_mask])) / field_spatial_bin_count
+                first_half_coverage = \
+                    np.sum(~np.isnan(first_half_ratemap[field_mask])) / field_spatial_bin_count
+                second_half_coverage = \
+                    np.sum(~np.isnan(second_half_ratemap[field_mask])) / field_spatial_bin_count
+
+                df.loc[i_field, 'full_rec_coverage'] = full_rec_coverage
+                df.loc[i_field, 'first_half_coverage'] = first_half_coverage
+                df.loc[i_field, 'second_half_coverage'] = second_half_coverage
+
+                if full_rec_coverage > 0:
+                    df.loc[i_field, 'full_rec_peak'] = np.nanmax(full_rec_ratemap[field_mask])
+
+                if first_half_coverage > 0:
+                    df.loc[i_field, 'first_half_peak'] = np.nanmax(first_half_ratemap[field_mask])
+
+                if second_half_coverage > 0:
+                    df.loc[i_field, 'second_half_peak'] = np.nanmax(second_half_ratemap[field_mask])
+
+        # Replace experiment_id values for plotting and rename the column
+        df.replace(to_replace={'experiment_id': experiment_id_substitutes}, inplace=True)
+        df.rename(columns={'experiment_id': 'environment'}, inplace=True)
+
+        return df
+
+    @staticmethod
+    def plot_for_environment(df, environment_name, axs, min_both_halves_coverage, stats_peak_rate):
+
+        df = df.copy(deep=True)
+
+        df['min_halves_coverage'] = \
+            np.min(np.stack([df['first_half_coverage'].values, df['second_half_coverage'].values], axis=1), axis=1)
+
+        df_coverage = pd.DataFrame({
+            'coverage': np.concatenate([
+                df['first_half_coverage'].values,
+                df['second_half_coverage'].values,
+                df['min_halves_coverage'].values
+            ]),
+            'half': (['1st'] * df.shape[0]) + (['2nd'] * df.shape[0]) + (['min'] * df.shape[0])
+        })
+
+        idx_good_coverage = \
+            np.min(np.stack([df['first_half_coverage'].values, df['second_half_coverage'].values], axis=1), axis=1) \
+            > min_both_halves_coverage
+
+        df = df.loc[idx_good_coverage]
+
+        df['min_halves_peak'] = np.min(np.stack([df['first_half_peak'].values, df['second_half_peak'].values], axis=1), axis=1)
+
+        df_peaks = pd.DataFrame({
+            'peak_rate': np.concatenate([
+                df['first_half_peak'].values,
+                df['second_half_peak'].values,
+                df['min_halves_peak'].values
+            ]),
+            'half': (['1st'] * df.shape[0]) + (['2nd'] * df.shape[0]) + (['min'] * df.shape[0])
+        })
+
+        sns.ecdfplot(data=df_coverage, x='coverage', hue='half', ax=axs[0])
+        axs[0].set_title('Env {} | {:.2f}% of fields with over {:.2f}% coverage'.format(
+            environment_name, 100 * np.sum(idx_good_coverage) / idx_good_coverage.size, 100 * min_both_halves_coverage
+        ))
+
+        sns.ecdfplot(data=df_peaks, x='peak_rate', hue='half', ax=axs[1])
+        axs[1].set_title('Env {} | {:.2f}% of fields with over {:.2f} Hz peak rate'.format(
+            environment_name,
+            100 * np.sum(df['min_halves_peak'] > stats_peak_rate) / df.shape[0],
+            stats_peak_rate
+        ))
+
+    @staticmethod
+    def plot(all_recordings, df_units, df_fields, axs, min_both_halves_coverage=0.5, stats_peak_rate=1):
+
+        df = FieldDetectionInRecordingHalves.compute(all_recordings, df_units, df_fields)
+
+        FieldDetectionInRecordingHalves.plot_for_environment(
+            df, 'All', axs[0, :],
+            min_both_halves_coverage, stats_peak_rate
+        )
+
+        environments = [experiment_id_substitutes[experiment_id] for experiment_id in main_experiment_ids]
+        for row_axs, environment in zip(axs[1:, :], environments):
+            FieldDetectionInRecordingHalves.plot_for_environment(
+                df.loc[df['environment'] == environment], environment, row_axs,
+                min_both_halves_coverage, stats_peak_rate
+            )
+
+    @staticmethod
+    def make_figure(all_recordings, df_units, df_fields):
+
+        fig, axs = plt.subplots(5, 2, figsize=(12, 20))
+        plt.subplots_adjust(left=0.1, right=0.9, bottom=0.05, top=0.95, wspace=0.3, hspace=0.5)
+
+        FieldDetectionInRecordingHalves.plot(all_recordings, df_units, df_fields, axs)
+
+        return fig
+
+    @staticmethod
+    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
+
+        figure_name = prefix + 'FieldDetectionInRecordingHalves'
+
+        if verbose:
+            print('Writing Figure {}'.format(figure_name))
+
+        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
+
+        fig = FieldDetectionInRecordingHalves.make_figure(all_recordings, df_units, df_fields)
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
+        plt.close(fig)
+
+        if verbose:
+            print('Writing Figure {} Done.'.format(figure_name))
+
+
+class IntraTrialCorrelations(object):
+
+    @staticmethod
+    def compute(all_recordings):
+
+        per_unit_animal = []
+        per_unit_environment = []
+        per_unit_minutes = []
+        per_unit_halves = []
+
+        per_animal_animal = []
+        per_animal_environment = []
+        per_animal_minutes = []
+        per_animal_halves = []
+
+        for recordings in all_recordings:
+
+            for i_recording, recording in enumerate(recordings[:4]):
+
+                if not (recording.info['experiment_id'] in main_experiment_ids):
+                    continue
+
+                odd_minute_ratemap_stack = []
+                even_minute_ratemap_stack = []
+
+                first_half_ratemap_stack = []
+                second_half_ratemap_stack = []
+
+                # Get correlations of each unit and collect ratemap stacks
+
+                for unit in recording.units:
+                    if unit['analysis']['category'] != 'place_cell':
+                        continue
+
+                    # Compute per unit correlations
+
+                    per_unit_animal.append(recording.info['animal'])
+                    per_unit_environment.append(experiment_id_substitutes[recording.info['experiment_id']])
+
+                    per_unit_minutes.append(
+                        spatial_correlation(
+                            unit['analysis']['spatial_ratemaps']['spike_rates_minutes']['odd'],
+                            unit['analysis']['spatial_ratemaps']['spike_rates_minutes']['even'],
+                            **Params.ratemap_stability_kwargs
+                        )[0]
+                    )
+
+                    per_unit_halves.append(
+                        spatial_correlation(
+                            unit['analysis']['spatial_ratemaps']['spike_rates_halves']['first'],
+                            unit['analysis']['spatial_ratemaps']['spike_rates_halves']['second'],
+                            **Params.ratemap_stability_kwargs
+                        )[0]
+                    )
+
+                    # Collect ratemaps to stack
+
+                    odd_minute_ratemap_stack.append(
+                        unit['analysis']['spatial_ratemaps']['spike_rates_minutes']['odd'])
+                    even_minute_ratemap_stack.append(
+                        unit['analysis']['spatial_ratemaps']['spike_rates_minutes']['even'])
+                    first_half_ratemap_stack.append(
+                        unit['analysis']['spatial_ratemaps']['spike_rates_halves']['first'])
+                    second_half_ratemap_stack.append(
+                        unit['analysis']['spatial_ratemaps']['spike_rates_halves']['second'])
+
+                # Compute correlation using ratemap stack
+
+                per_animal_animal.append(recording.info['animal'])
+                per_animal_environment.append(experiment_id_substitutes[recording.info['experiment_id']])
+
+                per_animal_minutes.append(
+                    spatial_correlation(
+                        np.stack(odd_minute_ratemap_stack, axis=2),
+                        np.stack(even_minute_ratemap_stack, axis=2),
+                        **Params.ratemap_stability_kwargs
+                    )[0]
+                )
+
+                per_animal_halves.append(
+                    spatial_correlation(
+                        np.stack(first_half_ratemap_stack, axis=2),
+                        np.stack(second_half_ratemap_stack, axis=2),
+                        **Params.ratemap_stability_kwargs
+                    )[0]
+                )
+
+        # Create DataFrames
+
+        df_per_unit = pd.DataFrame({
+            'animal': per_unit_animal,
+            'environment': per_unit_environment,
+            'minutes': per_unit_minutes,
+            'halves': per_unit_halves
+        })
+
+        df_per_animal = pd.DataFrame({
+            'animal': per_animal_animal,
+            'environment': per_animal_environment,
+            'minutes': per_animal_minutes,
+            'halves': per_animal_halves
+        })
+
+        return df_per_unit, df_per_animal
+
+    @staticmethod
+    def plot(df, ax, stat_ax, stripplot_size=1):
+        plot_raincloud_and_stats('environment', 'Pearson $\it{r}$', df, ax, stat_ax,
+                                 palette=sns.color_palette(sns_environment_colors[:len(main_experiment_ids)]),
+                                 x_order=[experiment_id_substitutes[experiment_id]
+                                          for experiment_id in main_experiment_ids],
+                                 stripplot_size=stripplot_size)
+        ax.set_yticks([y for y in ax.get_yticks() if y <= 1])
+
+    @staticmethod
+    def plot_all(all_recordings, axs, stat_axs):
+
+        df_per_unit, df_per_animal = IntraTrialCorrelations.compute(all_recordings)
+
+        # Plot correlation per unit
+
+        IntraTrialCorrelations.plot(df_per_unit.rename(columns={'minutes': 'Pearson $\it{r}$'}),
+                                    axs[0, 0], stat_axs[0, 0])
+        axs[0, 0].set_title('minutes correlation per unit')
+        stat_axs[0, 0].set_title('minutes correlation per unit')
+
+        IntraTrialCorrelations.plot(df_per_unit.rename(columns={'halves': 'Pearson $\it{r}$'}),
+                                    axs[0, 1], stat_axs[0, 1])
+        axs[0, 1].set_title('halves correlation per unit')
+        stat_axs[0, 1].set_title('halves correlation per unit')
+
+        # Plot correlation per animal
+
+        IntraTrialCorrelations.plot(df_per_animal.rename(columns={'minutes': 'Pearson $\it{r}$'}),
+                                    axs[1, 0], stat_axs[1, 0], stripplot_size=6)
+        axs[1, 0].set_title('minutes correlation per animal')
+        stat_axs[1, 0].set_title('minutes correlation per animal')
+
+        IntraTrialCorrelations.plot(df_per_animal.rename(columns={'halves': 'Pearson $\it{r}$'}),
+                                    axs[1, 1], stat_axs[1, 1], stripplot_size=6)
+        axs[1, 1].set_title('halves correlation per animal')
+        stat_axs[1, 1].set_title('halves correlation per animal')
+
+    @staticmethod
+    def make_figure(all_recordings):
+
+        fig, axs = plt.subplots(2, 2, figsize=(12, 12))
+        plt.subplots_adjust(left=0.1, right=0.9, bottom=0.05, top=0.95, wspace=0.3, hspace=0.5)
+
+        stat_fig, stat_axs = plt.subplots(2, 2, figsize=(20, 10))
+        plt.tight_layout(pad=1.5)
+        for ax in stat_axs.flatten():
+            ax.set_xticks([], [])
+            ax.set_yticks([], [])
+
+        IntraTrialCorrelations.plot_all(all_recordings, axs, stat_axs)
+
+        return fig, stat_fig
+
+    @staticmethod
+    def write(fpath, all_recordings, prefix='', verbose=True):
+
+        figure_name = prefix + 'IntraTrialCorrelations'
+
+        if verbose:
+            print('Writing Figure {}'.format(figure_name))
+
+        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
+
+        fig, stat_fig = IntraTrialCorrelations.make_figure(all_recordings)
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
+        stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
+        plt.close(fig)
+
+        if verbose:
+            print('Writing Figure {} Done.'.format(figure_name))
+
+
 class PlaceCellAndFieldCounts(object):
 
     @staticmethod
@@ -4114,6 +4464,8 @@ def main(fpath):
 
     ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
     FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
+    FieldDetectionInRecordingHalves.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
+    IntraTrialCorrelations.write(fpath, all_recordings, prefix='Figure_1_sup_4_')
     PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
     FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
     Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
