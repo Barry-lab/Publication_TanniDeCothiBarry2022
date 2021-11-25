@@ -31,13 +31,13 @@ from barrylab_ephys_analysis.scripts.exp_scales import snippets
 from barrylab_ephys_analysis.spikes.correlograms import plot_correlogram
 from barrylab_ephys_analysis.scripts.exp_scales.params import Params
 
-
 from barrylab_ephys_analysis.recording_io import Recording
 from barrylab_ephys_analysis.scripts.exp_scales import load
 from barrylab_ephys_analysis.scripts.exp_scales.paper_preprocess import preprocess_and_save_all_animals, \
     create_df_fields_for_recordings, create_unit_data_frames_for_recordings
 from barrylab_ephys_analysis.spatial.fields import compute_field_contour
 from barrylab_ephys_analysis.spikes.utils import count_spikes_in_sample_bins
+from barrylab_ephys_analysis.lfp.oscillations import FrequencyBandFrequency
 
 
 from barrylab_ephys_analysis.scripts.exp_scales.paper_methods import ValueByBinnedDistancePlot, \
@@ -4221,7 +4221,71 @@ class FiringRateChange(object):
         stat_ax.table(cellText=table_cell_text, cellLoc='left', loc='upper left', edges='open')
 
     @staticmethod
-    def make_figure(fpath, all_recordings, verbose=False):
+    def add_theta_frequency_column(all_recordings, df, df_units):
+
+        df['theta_frequency'] = np.nan
+        for animal in df['animal'].unique():
+            for experiment_id in df['experiment_id'].unique():
+
+                animal_and_experiment_done = False
+
+                for recordings in all_recordings:
+                    for recording in recordings:
+
+                        if animal_and_experiment_done:
+                            continue
+
+                        if recording.info['animal'] != animal or recording.info['experiment_id'] != experiment_id:
+                            continue
+
+                        place_cell_count_per_hemisphere = \
+                            df_units.loc[
+                                (df_units['animal'] == animal) & (df_units['category'] == 'place_cell')
+                                , 'channel_group'
+                            ].value_counts()
+
+                        theta_frequency = FrequencyBandFrequency(recording, 'theta_frequency')
+
+                        tetrode_index = \
+                            theta_frequency.data['channel_labels'].index(place_cell_count_per_hemisphere.idxmax())
+
+                        idx = (df['animal'] == animal) & (df['experiment_id'] == experiment_id)
+                        df.loc[idx, 'theta_frequency'] = \
+                            theta_frequency.get_values_interpolated_to_timestamps(
+                                df.loc[idx, 'timestamp'].values
+                            )[:, tetrode_index]
+
+                        animal_and_experiment_done = True
+
+    @staticmethod
+    def add_smoothed_speed_column(all_recordings, df):
+
+        df['running_speed'] = np.nan
+        for animal in df['animal'].unique():
+            for experiment_id in df['experiment_id'].unique():
+
+                animal_and_experiment_done = False
+
+                for recordings in all_recordings:
+                    for recording in recordings:
+
+                        if animal_and_experiment_done:
+                            continue
+
+                        if recording.info['animal'] != animal or recording.info['experiment_id'] != experiment_id:
+                            continue
+
+                        idx = (df['animal'] == animal) & (df['experiment_id'] == experiment_id)
+
+                        speed = recording.get_smoothed_speed(Params.xy_masking['speed_smoothing_window'])
+
+                        df.loc[idx, 'running_speed'] = \
+                            np.interp(df.loc[idx, 'timestamp'].values, recording.position['timestamps'], speed)
+
+                        animal_and_experiment_done = True
+
+    @staticmethod
+    def make_figure(fpath, all_recordings, df_units, verbose=False):
 
         fig, axs = plt.subplots(1, 2, figsize=(7, 4))
         plt.subplots_adjust(left=0.13, bottom=0.16, right=0.95, top=0.8, wspace=0.65)
@@ -4236,8 +4300,11 @@ class FiringRateChange(object):
         value = 'rate change\n(euclidean)'
 
         df = PopulationVectorChangeRate.get_dataframe(all_recordings)
-        df = df.loc[df['environment'] == 'D'].copy()
         df.dropna(inplace=True)
+        df = df.loc[df['environment'] == 'D'].copy()
+
+        FiringRateChange.add_theta_frequency_column(all_recordings, df, df_units)
+        FiringRateChange.add_smoothed_speed_column(all_recordings, df)
 
         # Write DataFrame to disk for use in other analyses
         population_vector_change_file_path = os.path.join(fpath, Params.analysis_path, 'df_population_vector_change.p')
@@ -4276,7 +4343,7 @@ class FiringRateChange(object):
         return fig, stat_fig
 
     @staticmethod
-    def write(fpath, all_recordings, prefix='', verbose=True):
+    def write(fpath, all_recordings, df_units, prefix='', verbose=True):
 
         figure_name = prefix + 'FiringRateChange'
 
@@ -4285,7 +4352,7 @@ class FiringRateChange(object):
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        fig, stat_fig = FiringRateChange.make_figure(fpath, all_recordings, verbose=verbose)
+        fig, stat_fig = FiringRateChange.make_figure(fpath, all_recordings, df_units, verbose=verbose)
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
         stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
@@ -4489,7 +4556,7 @@ def main(fpath):
     FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
     AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_3_')
     InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_3_sup_4_')
-    FiringRateChange.write(fpath, all_recordings, prefix='Figure_4AB_')
+    FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_4AB_')
     FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_4_sup_1_')
 
 
