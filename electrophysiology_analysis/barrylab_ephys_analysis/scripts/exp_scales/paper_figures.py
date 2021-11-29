@@ -3,7 +3,7 @@ import pickle
 import sys
 from random import shuffle
 import numpy as np
-from scipy.stats import kruskal, mannwhitneyu, pearsonr, linregress, friedmanchisquare, gamma, poisson
+from scipy.stats import kruskal, mannwhitneyu, pearsonr, linregress, friedmanchisquare, gamma, poisson, zscore
 from scipy.special import gamma as gamma_function
 from scipy.optimize import minimize
 from scipy.spatial.distance import jensenshannon
@@ -12,6 +12,7 @@ from itertools import combinations
 from scipy import ndimage
 import pandas as pd
 from tqdm import tqdm
+from pingouin import partial_corr
 import matplotlib
 
 
@@ -115,6 +116,10 @@ experiment_ids_with_areas_ticks = {
     'ticks': [0.0] + [arena_areas_meters[x] for x in main_experiment_ids],
     'ticklabels': ['0'] + [experiment_ids_with_areas[x] for x in main_experiment_ids]
 }
+
+
+def construct_df_population_vector_change_file_path(fpath):
+    return os.path.join(fpath, Params.analysis_path, 'df_population_vector_change.p')
 
 
 class ExampleUnit(object):
@@ -4307,7 +4312,7 @@ class FiringRateChange(object):
         FiringRateChange.add_smoothed_speed_column(all_recordings, df)
 
         # Write DataFrame to disk for use in other analyses
-        population_vector_change_file_path = os.path.join(fpath, Params.analysis_path, 'df_population_vector_change.p')
+        population_vector_change_file_path = construct_df_population_vector_change_file_path(fpath)
         df.to_pickle(population_vector_change_file_path)
         print('Population vector change values written to {}'.format(population_vector_change_file_path))
 
@@ -4451,6 +4456,134 @@ class FiringRateChangeAll(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
+class FiringRateChangeAndTheta(object):
+
+    @staticmethod
+    def binned_values(values, quantiles=10):
+        return np.array(list(map(lambda c: float(c.mid.mean()), pd.qcut(values, quantiles))))
+
+    # @staticmethod
+    # def normalized_column_name(column):
+    #     return column + '_normalized_per_animal'
+
+    @staticmethod
+    def normalise_values_per_animal(df, columns):
+        for column in columns:
+            for animal in df['animal'].unique():
+                idx = df['animal'] == animal
+                df.loc[idx, column] = zscore(df.loc[idx, column])
+
+    @staticmethod
+    def plot(df, normalize_per_animal, axs, stat_axs):
+
+        columns = ['running_speed', 'rate change\n(euclidean)', 'theta_frequency']
+
+        df = df.copy(deep=True)
+
+        if normalize_per_animal:
+            FiringRateChangeAndTheta.normalise_values_per_animal(df, columns)
+
+        for column in columns:
+            df[column] = FiringRateChangeAndTheta.binned_values(df[column])
+            df.loc[df[column] == df[column].min(), column] = np.nan
+            df.loc[df[column] == df[column].max(), column] = np.nan
+
+        df = df.dropna()
+
+        for i in range(3):
+            for j in range(3):
+                if i == j:
+                    continue
+
+                covar_column = list(set(columns) - set([columns[i], columns[j]]))[0]
+
+                dfg = df.groupby(['animal', columns[i]])[[columns[j], covar_column]].mean().reset_index()
+
+                sns.scatterplot(
+                    data=dfg,
+                    x=columns[i],
+                    y=columns[j],
+                    ax=axs[j, i])
+
+                axs[j, i].set_xlabel('')
+                axs[j, i].set_ylabel('')
+
+                pcorr_stats = partial_corr(
+                    data=dfg,
+                    x=columns[i],
+                    y=columns[j],
+                    covar=covar_column
+                )
+
+                axs[j, i].set_title('r = {:.3f} | p = {:e}'.format(pcorr_stats.loc['pearson', 'r'],
+                                                                   pcorr_stats.loc['pearson', 'p-val']))
+
+                table_cell_text = []
+                table_cell_text.append(['x', columns[i]])
+                table_cell_text.append(['', ''])
+                table_cell_text.append(['', ''])
+                table_cell_text.append(['y', columns[j]])
+                table_cell_text.append(['', ''])
+                table_cell_text.append(['', ''])
+                table_cell_text.append(['covar', covar_column])
+                table_cell_text.append(['', ''])
+                table_cell_text.append(['', ''])
+                for stat_column in pcorr_stats.columns:
+                    table_cell_text.append([stat_column, str(pcorr_stats.loc['pearson', stat_column])])
+                    table_cell_text.append(['', ''])
+
+                stat_axs[j, i].table(cellText=table_cell_text, cellLoc='left', loc='upper left', edges='open')
+
+        for i in range(len(columns)):
+            axs[-1, i].set_xlabel(columns[i])
+
+        for j in range(len(columns)):
+            axs[j, 0].set_ylabel(columns[j])
+
+        for d in range(len(columns)):
+            axs[d, d].set_xticks([])
+            axs[d, d].set_yticks([])
+
+    @staticmethod
+    def make_figure(fpath, normalize_per_animal):
+
+        fig, axs = plt.subplots(3, 3, figsize=(12, 12))
+        plt.subplots_adjust(left=0.1, bottom=0.08, right=0.98, top=0.92, wspace=0.2, hspace=0.4)
+
+        stat_fig, stat_axs = plt.subplots(3, 3, figsize=(20, 20))
+        plt.tight_layout(pad=1.5)
+        for stat_ax in stat_axs.flatten():
+            stat_ax.set_xticks([], [])
+            stat_ax.set_yticks([], [])
+
+        FiringRateChangeAndTheta.plot(
+            pd.read_pickle(construct_df_population_vector_change_file_path(fpath)),
+            normalize_per_animal, axs, stat_axs
+        )
+
+        return fig, stat_fig
+
+    @staticmethod
+    def write(fpath, normalize_per_animal=False, prefix='', verbose=True):
+
+        figure_name = prefix + 'FiringRateChangeAndTheta'
+
+        if verbose:
+            print('Writing Figure {}'.format(figure_name))
+
+        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
+
+        fig, stat_fig = FiringRateChangeAndTheta.make_figure(fpath, normalize_per_animal)
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
+        stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
+        plt.close(fig)
+        plt.close(stat_fig)
+
+        if verbose:
+            print('Writing Figure {} Done.'.format(figure_name))
+
+
 def load_data_preprocessed_if_available(fpath, recompute=False, verbose=False):
 
     # This ensures all possible pre-processing is completed before loading data
@@ -4558,6 +4691,8 @@ def main(fpath):
     InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_3_sup_4_')
     FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_4AB_')
     FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_4_sup_1_')
+    FiringRateChangeAndTheta.write(fpath, normalize_per_animal=False, prefix='Figure_R1_')
+    FiringRateChangeAndTheta.write(fpath, normalize_per_animal=True, prefix='Figure_R1_normalized_')
 
 
 if __name__ == '__main__':
