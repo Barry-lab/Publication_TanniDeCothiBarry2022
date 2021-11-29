@@ -4584,6 +4584,28 @@ class FiringRateChangeAndTheta(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
+def print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields):
+    df = df_fields[['animal', 'animal_unit']].copy(deep=True)
+    df = df.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
+                  how='left', on=['animal', 'animal_unit'])
+    df = df.loc[df['category'] == 'place_cell', ['animal', 'animal_unit']]  # Only keep place cell fields
+    df['count'] = 1
+    df = df.groupby(['animal', 'animal_unit'])['count'].sum().reset_index()
+    df = df.merge(df_units[['animal', 'animal_unit', 'isolation_distance', 'l_ratio']], on=['animal', 'animal_unit'],
+                  how='left')
+    df = df.dropna()
+    for measure in ('isolation_distance', 'l_ratio'):
+        print('Across animals correlation of {} to field count: r={:.3f} p={:.6f}'.format(measure,
+                                                                                          *pearsonr(df[measure],
+                                                                                                    df['count'])))
+        for animal in df['animal'].unique():
+            idx = df['animal'] == animal
+            print(
+                'Animal {} correlation of {} to field count: r={:.3f} p={:.6f} | total units = {} | fields per unit {:.2f}'.format(
+                    animal, measure, *pearsonr(df.loc[idx, measure], df.loc[idx, 'count']), np.sum(idx),
+                    np.mean(df.loc[idx, 'count'])))
+
+
 def load_data_preprocessed_if_available(fpath, recompute=False, verbose=False):
 
     # This ensures all possible pre-processing is completed before loading data
@@ -4693,6 +4715,8 @@ def main(fpath):
     FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_4_sup_1_')
     FiringRateChangeAndTheta.write(fpath, normalize_per_animal=False, prefix='Figure_R1_')
     FiringRateChangeAndTheta.write(fpath, normalize_per_animal=True, prefix='Figure_R1_normalized_')
+
+    print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
 
 
 if __name__ == '__main__':
