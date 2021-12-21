@@ -310,177 +310,6 @@ class FieldDetectionMethod(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
-class FieldDetectionInRecordingHalves(object):
-
-    @staticmethod
-    def compute(all_recordings, df_units, df_fields):
-
-        # Create a copy of df_fields with only the relevant columns
-        df = df_fields[['unit', 'animal', 'animal_unit', 'animal_field', 'experiment_id']].copy(deep=True)
-        df = df.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
-                      how='left', on=['animal', 'animal_unit'])
-        df = df[df['category'] == 'place_cell']  # Only keep place cell fields
-        df = df[['unit', 'animal', 'animal_unit', 'animal_field', 'experiment_id']]
-
-        # Only keep fields not in exp_scales_a2
-        df = df[df['experiment_id'] != 'exp_scales_a2']
-
-        df = df.reset_index(drop=True)
-
-        df['full_rec_peak'] = np.nan
-        df['first_half_peak'] = np.nan
-        df['second_half_peak'] = np.nan
-        df['full_rec_coverage'] = np.nan
-        df['first_half_coverage'] = np.nan
-        df['second_half_coverage'] = np.nan
-
-        # Iterate over all fields and fill in DataFrame
-        for recordings in all_recordings:
-
-            recording_experiment_ids = [recording.info['experiment_id'] for recording in recordings]
-
-            for field in recordings[0].analysis['fields']:
-
-                idx = (
-                        (df['animal'] == field['properties']['animal'])
-                        & (df['animal_field'] == field['properties']['animal_field'])
-                )
-                matching_fields = np.sum(idx)
-                if matching_fields == 0:
-                    continue
-                elif matching_fields == 1:
-                    i_field = np.where(idx)[0][0]
-                else:
-                    raise Exception('Should not have more than one corresponding fields detected in DataFrame.')
-
-                i_recording = recording_experiment_ids.index(field['properties']['experiment_id'])
-
-                unit_data = recordings.units[field['properties']['animal_unit']][i_recording]
-                full_rec_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_smoothed']
-                first_half_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_halves']['first']
-                second_half_ratemap = unit_data['analysis']['spatial_ratemaps']['spike_rates_halves']['second']
-
-                field_mask = ~np.isnan(field['ratemap'])
-                field_spatial_bin_count = np.sum(field_mask)
-
-                full_rec_coverage = \
-                    np.sum(~np.isnan(full_rec_ratemap[field_mask])) / field_spatial_bin_count
-                first_half_coverage = \
-                    np.sum(~np.isnan(first_half_ratemap[field_mask])) / field_spatial_bin_count
-                second_half_coverage = \
-                    np.sum(~np.isnan(second_half_ratemap[field_mask])) / field_spatial_bin_count
-
-                df.loc[i_field, 'full_rec_coverage'] = full_rec_coverage
-                df.loc[i_field, 'first_half_coverage'] = first_half_coverage
-                df.loc[i_field, 'second_half_coverage'] = second_half_coverage
-
-                if full_rec_coverage > 0:
-                    df.loc[i_field, 'full_rec_peak'] = np.nanmax(full_rec_ratemap[field_mask])
-
-                if first_half_coverage > 0:
-                    df.loc[i_field, 'first_half_peak'] = np.nanmax(first_half_ratemap[field_mask])
-
-                if second_half_coverage > 0:
-                    df.loc[i_field, 'second_half_peak'] = np.nanmax(second_half_ratemap[field_mask])
-
-        # Replace experiment_id values for plotting and rename the column
-        df.replace(to_replace={'experiment_id': experiment_id_substitutes}, inplace=True)
-        df.rename(columns={'experiment_id': 'environment'}, inplace=True)
-
-        return df
-
-    @staticmethod
-    def plot_for_environment(df, environment_name, axs, min_both_halves_coverage, stats_peak_rate):
-
-        df = df.copy(deep=True)
-
-        df['min_halves_coverage'] = \
-            np.min(np.stack([df['first_half_coverage'].values, df['second_half_coverage'].values], axis=1), axis=1)
-
-        df_coverage = pd.DataFrame({
-            'coverage': np.concatenate([
-                df['first_half_coverage'].values,
-                df['second_half_coverage'].values,
-                df['min_halves_coverage'].values
-            ]),
-            'half': (['1st'] * df.shape[0]) + (['2nd'] * df.shape[0]) + (['min'] * df.shape[0])
-        })
-
-        idx_good_coverage = \
-            np.min(np.stack([df['first_half_coverage'].values, df['second_half_coverage'].values], axis=1), axis=1) \
-            > min_both_halves_coverage
-
-        df = df.loc[idx_good_coverage]
-
-        df['min_halves_peak'] = np.min(np.stack([df['first_half_peak'].values, df['second_half_peak'].values], axis=1), axis=1)
-
-        df_peaks = pd.DataFrame({
-            'peak_rate': np.concatenate([
-                df['first_half_peak'].values,
-                df['second_half_peak'].values,
-                df['min_halves_peak'].values
-            ]),
-            'half': (['1st'] * df.shape[0]) + (['2nd'] * df.shape[0]) + (['min'] * df.shape[0])
-        })
-
-        sns.ecdfplot(data=df_coverage, x='coverage', hue='half', ax=axs[0])
-        axs[0].set_title('Env {} | {:.2f}% of fields with over {:.2f}% coverage'.format(
-            environment_name, 100 * np.sum(idx_good_coverage) / idx_good_coverage.size, 100 * min_both_halves_coverage
-        ))
-
-        sns.ecdfplot(data=df_peaks, x='peak_rate', hue='half', ax=axs[1])
-        axs[1].set_title('Env {} | {:.2f}% of fields with over {:.2f} Hz peak rate'.format(
-            environment_name,
-            100 * np.sum(df['min_halves_peak'] > stats_peak_rate) / df.shape[0],
-            stats_peak_rate
-        ))
-
-    @staticmethod
-    def plot(all_recordings, df_units, df_fields, axs, min_both_halves_coverage=0.5, stats_peak_rate=1):
-
-        df = FieldDetectionInRecordingHalves.compute(all_recordings, df_units, df_fields)
-
-        FieldDetectionInRecordingHalves.plot_for_environment(
-            df, 'All', axs[0, :],
-            min_both_halves_coverage, stats_peak_rate
-        )
-
-        environments = [experiment_id_substitutes[experiment_id] for experiment_id in main_experiment_ids]
-        for row_axs, environment in zip(axs[1:, :], environments):
-            FieldDetectionInRecordingHalves.plot_for_environment(
-                df.loc[df['environment'] == environment], environment, row_axs,
-                min_both_halves_coverage, stats_peak_rate
-            )
-
-    @staticmethod
-    def make_figure(all_recordings, df_units, df_fields):
-
-        fig, axs = plt.subplots(5, 2, figsize=(12, 20))
-        plt.subplots_adjust(left=0.1, right=0.9, bottom=0.05, top=0.95, wspace=0.3, hspace=0.5)
-
-        FieldDetectionInRecordingHalves.plot(all_recordings, df_units, df_fields, axs)
-
-        return fig
-
-    @staticmethod
-    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
-
-        figure_name = prefix + 'FieldDetectionInRecordingHalves'
-
-        if verbose:
-            print('Writing Figure {}'.format(figure_name))
-
-        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
-
-        fig = FieldDetectionInRecordingHalves.make_figure(all_recordings, df_units, df_fields)
-        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
-        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
-        plt.close(fig)
-
-        if verbose:
-            print('Writing Figure {} Done.'.format(figure_name))
-
-
 class IntraTrialCorrelations(object):
 
     @staticmethod
@@ -490,11 +319,6 @@ class IntraTrialCorrelations(object):
         per_unit_environment = []
         per_unit_minutes = []
         per_unit_halves = []
-
-        per_animal_animal = []
-        per_animal_environment = []
-        per_animal_minutes = []
-        per_animal_halves = []
 
         for recordings in all_recordings:
 
@@ -547,28 +371,7 @@ class IntraTrialCorrelations(object):
                     second_half_ratemap_stack.append(
                         unit['analysis']['spatial_ratemaps']['spike_rates_halves']['second'])
 
-                # Compute correlation using ratemap stack
-
-                per_animal_animal.append(recording.info['animal'])
-                per_animal_environment.append(experiment_id_substitutes[recording.info['experiment_id']])
-
-                per_animal_minutes.append(
-                    spatial_correlation(
-                        np.stack(odd_minute_ratemap_stack, axis=2),
-                        np.stack(even_minute_ratemap_stack, axis=2),
-                        **Params.ratemap_stability_kwargs
-                    )[0]
-                )
-
-                per_animal_halves.append(
-                    spatial_correlation(
-                        np.stack(first_half_ratemap_stack, axis=2),
-                        np.stack(second_half_ratemap_stack, axis=2),
-                        **Params.ratemap_stability_kwargs
-                    )[0]
-                )
-
-        # Create DataFrames
+        # Create DataFrame
 
         df_per_unit = pd.DataFrame({
             'animal': per_unit_animal,
@@ -577,71 +380,72 @@ class IntraTrialCorrelations(object):
             'halves': per_unit_halves
         })
 
-        df_per_animal = pd.DataFrame({
-            'animal': per_animal_animal,
-            'environment': per_animal_environment,
-            'minutes': per_animal_minutes,
-            'halves': per_animal_halves
-        })
-
-        return df_per_unit, df_per_animal
+        return df_per_unit
 
     @staticmethod
-    def plot(df, ax, stat_ax, stripplot_size=1):
+    def plot(all_recordings, ax, stat_ax, stripplot_size=1):
+
+        df = IntraTrialCorrelations.compute(all_recordings).rename(columns={'halves': 'Pearson $\it{r}$'})
+
         plot_raincloud_and_stats('environment', 'Pearson $\it{r}$', df, ax, stat_ax,
                                  palette=sns.color_palette(sns_environment_colors[:len(main_experiment_ids)]),
                                  x_order=[experiment_id_substitutes[experiment_id]
                                           for experiment_id in main_experiment_ids],
                                  stripplot_size=stripplot_size)
         ax.set_yticks([y for y in ax.get_yticks() if y <= 1])
-
-    @staticmethod
-    def plot_all(all_recordings, axs, stat_axs):
-
-        df_per_unit, df_per_animal = IntraTrialCorrelations.compute(all_recordings)
-
-        # Plot correlation per unit
-
-        IntraTrialCorrelations.plot(df_per_unit.rename(columns={'minutes': 'Pearson $\it{r}$'}),
-                                    axs[0, 0], stat_axs[0, 0])
-        axs[0, 0].set_title('minutes correlation per unit')
-        stat_axs[0, 0].set_title('minutes correlation per unit')
-
-        IntraTrialCorrelations.plot(df_per_unit.rename(columns={'halves': 'Pearson $\it{r}$'}),
-                                    axs[0, 1], stat_axs[0, 1])
-        axs[0, 1].set_title('halves correlation per unit')
-        stat_axs[0, 1].set_title('halves correlation per unit')
-
-        # Plot correlation per animal
-
-        IntraTrialCorrelations.plot(df_per_animal.rename(columns={'minutes': 'Pearson $\it{r}$'}),
-                                    axs[1, 0], stat_axs[1, 0], stripplot_size=6)
-        axs[1, 0].set_title('minutes correlation per animal')
-        stat_axs[1, 0].set_title('minutes correlation per animal')
-
-        IntraTrialCorrelations.plot(df_per_animal.rename(columns={'halves': 'Pearson $\it{r}$'}),
-                                    axs[1, 1], stat_axs[1, 1], stripplot_size=6)
-        axs[1, 1].set_title('halves correlation per animal')
-        stat_axs[1, 1].set_title('halves correlation per animal')
+        ax.set_xlabel('environment')
 
     @staticmethod
     def make_figure(all_recordings):
 
-        fig, axs = plt.subplots(2, 2, figsize=(12, 12))
-        plt.subplots_adjust(left=0.1, right=0.9, bottom=0.05, top=0.95, wspace=0.3, hspace=0.5)
+        fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+        plt.subplots_adjust(left=0.15, bottom=0.15, right=0.99, top=0.98)
 
-        stat_fig, stat_axs = plt.subplots(2, 2, figsize=(20, 10))
+        stat_fig, stat_ax = plt.subplots(1, 1, figsize=(8, 8))
         plt.tight_layout(pad=1.5)
-        for ax in stat_axs.flatten():
-            ax.set_xticks([], [])
-            ax.set_yticks([], [])
+        stat_ax.set_xticks([], [])
+        stat_ax.set_yticks([], [])
 
-        IntraTrialCorrelations.plot_all(all_recordings, axs, stat_axs)
+        IntraTrialCorrelations.plot(all_recordings, ax, stat_ax)
 
         return fig, stat_fig
 
     @staticmethod
-    def write(fpath, all_recordings, prefix='', verbose=True):
+    def print_correlation_between_spatial_correlation_and_field_count_per_cell(all_recordings, df_units, df_fields):
+
+        df = df_fields.loc[df_fields['experiment_id'] == 'exp_scales_d',
+                           ['animal', 'animal_unit']].copy(deep=True)
+        df = df.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
+                      how='left', on=['animal', 'animal_unit'])
+        df = df.loc[df['category'] == 'place_cell', ['animal', 'animal_unit']]  # Only keep place cell fields
+        df['count'] = 1
+        df = df.groupby(['animal', 'animal_unit'])['count'].sum().reset_index()
+
+        animal_recordings = {recordings[0].info['animal']: recordings for recordings in all_recordings}
+        animal_exp_scales_d_recording_index = {}
+        for animal, recordings in animal_recordings.items():
+            animal_exp_scales_d_recording_index[animal] = [
+                recording.info['experiment_id'] for recording in animal_recordings[animal]
+            ].index('exp_scales_d')
+
+        spatial_correlations = []
+        for animal, animal_unit in zip(df['animal'], df['animal_unit']):
+            unit = animal_recordings[animal].units[animal_unit][animal_exp_scales_d_recording_index[animal]]
+            spatial_correlations.append(
+                unit['analysis']['spatial_ratemaps']['spike_rates_halves']['stability']
+            )
+
+        df['spatial_correlation_between_halves'] = spatial_correlations
+
+        print()
+        print('Correlation between spatial correlation (1st and 2nd half) and count of place fields in environment D: '
+              'r={:.3f} p={:.6f} N={}'.format(
+            *pearsonr(df['spatial_correlation_between_halves'], df['count']), df.shape[0]
+        ))
+        print()
+
+    @staticmethod
+    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
 
         figure_name = prefix + 'IntraTrialCorrelations'
 
@@ -655,6 +459,10 @@ class IntraTrialCorrelations(object):
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
         stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
         plt.close(fig)
+
+        IntraTrialCorrelations.print_correlation_between_spatial_correlation_and_field_count_per_cell(
+            all_recordings, df_units, df_fields
+        )
 
         if verbose:
             print('Writing Figure {} Done.'.format(figure_name))
@@ -1554,8 +1362,8 @@ class ConservationOfFieldFormationPropensity(object):
     @staticmethod
     def make_figure(df_units, df_fields, environment_field_density_model_parameters, verbose=False):
 
-        fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-        plt.subplots_adjust(left=0.2, bottom=0.2, right=0.98, top=0.95)
+        fig, ax = plt.subplots(1, 1, figsize=(3, 3))
+        plt.subplots_adjust(left=0.32, bottom=0.2, right=0.98, top=0.9)
 
         stat_fig, stat_ax = plt.subplots(1, 1, figsize=(10, 10))
         plt.tight_layout(pad=1)
@@ -1759,90 +1567,6 @@ class FieldsPerCellAcrossEnvironments:
 
         return field_count_distributions_per_area_all, field_count_distributions_per_area_active
 
-    # @staticmethod
-    # def field_propensity_distribution_fitting_single(params, area, field_count_distribution_prediction):
-    #     """Computes the prediction error for a given shape parameter of the Gamma distribution defining
-    #     the field formation propensity distribution in the population.
-    #
-    #     The predictions are assumed to be for units with at least one field.
-    #     `total_fields` - total number of fields observed
-    #     `field_count_distribution_prediction` - array - proportion of units with 1, 2, 3 ... fields
-    #
-    #     This approach of computing the prediction error assumes that the total number of units is unknown
-    #     and, therefore, the count of units with 0 fields is unknown.
-    #     """
-    #
-    #     field_count_distribution = \
-    #         FieldsPerCellAcrossEnvironments.predict_field_count_distribution_with_gamma_poisson(
-    #             area, *params
-    #         )
-    #
-    #     # Exclude the prediction of unit numbers with 0 fields, as this is not known in data
-    #     field_count_distribution = field_count_distribution[1:]
-    #
-    #     # Make sure arrays are same length by adding or removing 0 vales at the end of the shorter array
-    #     if field_count_distribution.size > field_count_distribution_prediction.size:
-    #         field_count_distribution_prediction = \
-    #             np.concatenate([field_count_distribution_prediction,
-    #                             np.zeros(field_count_distribution.size
-    #                                      - field_count_distribution_prediction.size)])
-    #     elif field_count_distribution.size < field_count_distribution_prediction.size:
-    #         field_count_distribution = \
-    #             np.concatenate([field_count_distribution,
-    #                             np.zeros(field_count_distribution_prediction.size
-    #                                      - field_count_distribution.size)])
-    #     else:
-    #         pass
-    #
-    #     # Compute the distribution normalised to the total number of units with at least one field
-    #     field_count_distribution = field_count_distribution / np.sum(field_count_distribution)
-    #
-    #     # Return sum of squared residuals
-    #     return np.sum((field_count_distribution_prediction - field_count_distribution) ** 2)
-    #
-    # @staticmethod
-    # def field_propensity_distribution_fitting_multi(params, area_list, field_count_distribution_prediction_list):
-    #     errors = []
-    #     for area, field_count_distribution_prediction in zip(area_list, field_count_distribution_prediction_list):
-    #
-    #         errors.append(FieldsPerCellAcrossEnvironments.field_propensity_distribution_fitting_single(
-    #             params, area, field_count_distribution_prediction
-    #         ))
-    #
-    #     return np.sum(errors)
-    #
-    # @staticmethod
-    # def mp_func(args):
-    #     return (FieldsPerCellAcrossEnvironments.field_propensity_distribution_fitting_multi(*args[:3]),
-    #             args[3], args[4])
-    #
-    # @staticmethod
-    # def plot_errors_for_parameters(area_list, field_count_distribution_prediction_list, ax):
-    #
-    #     shapes = np.arange(0.1, 10, 0.1)
-    #     scales = np.arange(0.005, 0.8, 0.005)
-    #
-    #     args = []
-    #     for i, p1 in enumerate(shapes):
-    #         for j, p2 in enumerate(scales):
-    #             args.append(((p1, p2), area_list, field_count_distribution_prediction_list, i, j))
-    #
-    #     with multiprocessing.Pool(processes=30) as pool:
-    #
-    #         iterable = tqdm(pool.imap_unordered(FieldsPerCellAcrossEnvironments.mp_func, args),
-    #                         total=len(args))
-    #
-    #         error_array = np.zeros((shapes.size, scales.size)) * np.nan
-    #         for error, i, j in iterable:
-    #             error_array[i, j] = np.log10(error)
-    #
-    #     axes_image = ax.imshow(np.flipud(error_array), aspect='auto',
-    #                            extent=(scales.min(), scales.max(), shapes.min(), shapes.max()))
-    #
-    #     divider = make_axes_locatable(ax)
-    #     cax = divider.append_axes("right", size='{}%'.format(5), pad=0.05)
-    #     ax.figure.colorbar(axes_image, cax=cax, ax=ax)
-
     @staticmethod
     def plot_gamma_pdf(gamma_shape, gamma_scale, ax):
 
@@ -1870,8 +1594,6 @@ class FieldsPerCellAcrossEnvironments:
                 df_fields, df_units, combine_environments=True
             )
         df = pd.concat([df_by_environment, df_combined], 0, ignore_index=True, sort=True)
-        # df_count_per_unit = pd.concat([df_count_per_unit_by_environment, df_count_per_unit_combined],
-        #                               0, ignore_index=True, sort=True)
 
         areas_corrected = FieldsDetectedAcrossEnvironments.compute_environment_areas_with_field_density_correction(
             parameters=environment_field_density_model_parameters
@@ -2003,7 +1725,7 @@ class FieldsPerCellAcrossEnvironments:
                                & (df['values'] == 'data - place cells in environment'), 'number of fields'].max()
                         for environment in environments_real]
 
-        gs = GridSpecFromSubplotSpec(2, 1, ax, height_ratios=[1, 3], hspace=0.3)
+        gs = GridSpecFromSubplotSpec(2, 1, ax, height_ratios=[1, 3], hspace=0.4)
         ax_top = fig.add_subplot(gs[0])
         ax_bottom = fig.add_subplot(gs[1])
         ax_top.axis('off')
@@ -2153,7 +1875,7 @@ class FieldsPerCellAcrossEnvironments:
     @staticmethod
     def make_figure(df_units, df_fields, environment_field_density_model_parameters, verbose=False):
 
-        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        fig, ax = plt.subplots(1, 1, figsize=(9, 7))
         plt.subplots_adjust(left=0.08, bottom=0.08, right=0.99, top=0.95)
 
         stat_fig, stat_ax = plt.subplots(1, 1, figsize=(10, 10))
@@ -3350,7 +3072,7 @@ class AverageActivity:
         ax.set_ylabel(ylabel)
 
     @staticmethod
-    def make_figure(all_recordings, df_units, df_fields, verbose=False):
+    def make_figure(all_recordings):
 
         fig, axs = plt.subplots(1, 2, figsize=(6, 4))
         plt.subplots_adjust(left=0.13, bottom=0.16, right=0.95, top=0.8, wspace=0.5)
@@ -3379,7 +3101,7 @@ class AverageActivity:
         return fig, stat_fig
 
     @staticmethod
-    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
+    def write(fpath, all_recordings, prefix='', verbose=True):
 
         figure_name = prefix + 'AverageActivity'
 
@@ -3388,7 +3110,7 @@ class AverageActivity:
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        fig, stat_fig = AverageActivity.make_figure(all_recordings, df_units, df_fields, verbose=verbose)
+        fig, stat_fig = AverageActivity.make_figure(all_recordings)
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
         stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
@@ -3928,7 +3650,7 @@ class FiringRateDistribution(object):
     @staticmethod
     def make_figure(all_recordings):
 
-        fig, axs = plt.subplots(2, 1, figsize=(7, 5), gridspec_kw={'height_ratios': [4, 1]})
+        fig, axs = plt.subplots(2, 1, figsize=(6, 4), gridspec_kw={'height_ratios': [4, 1]})
         plt.subplots_adjust(left=0.16, bottom=0.13, right=0.97, top=0.95, hspace=0.5)
 
         axs[1].axis('off')
@@ -4123,7 +3845,7 @@ class FieldAreaDistribution(object):
     @staticmethod
     def make_figure(df_units, df_fields):
 
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+        fig, ax = plt.subplots(1, 1, figsize=(6, 5))
         plt.subplots_adjust(left=0.15, bottom=0.2, right=0.993, top=0.95, hspace=0.45)
 
         stat_fig, stat_ax = plt.subplots(1, 1, figsize=(10, 10))
@@ -4462,9 +4184,51 @@ class FiringRateChangeAndTheta(object):
     def binned_values(values, quantiles=10):
         return np.array(list(map(lambda c: float(c.mid.mean()), pd.qcut(values, quantiles))))
 
-    # @staticmethod
-    # def normalized_column_name(column):
-    #     return column + '_normalized_per_animal'
+    @staticmethod
+    def plot_single_relation(df, x_axis_column, y_axis_column, covar_column, ax, stat_ax):
+
+        df = df.copy(deep=True)
+
+        df[x_axis_column] = FiringRateChangeAndTheta.binned_values(df[x_axis_column])
+        df.loc[df[x_axis_column] == df[x_axis_column].min(), x_axis_column] = np.nan
+        df.loc[df[x_axis_column] == df[x_axis_column].max(), x_axis_column] = np.nan
+
+        df = df.dropna()
+
+        dfg = df.groupby(['animal', x_axis_column])[[y_axis_column, covar_column]].mean().reset_index()
+
+        sns.scatterplot(
+            data=dfg,
+            x=x_axis_column,
+            y=y_axis_column,
+            hue='animal',
+            ax=ax)
+
+        pcorr_stats = partial_corr(
+            data=dfg,
+            x=x_axis_column,
+            y=y_axis_column,
+            covar=covar_column
+        )
+
+        ax.set_title('r = {:.3f} | p = {:e}'.format(pcorr_stats.loc['pearson', 'r'],
+                                                    pcorr_stats.loc['pearson', 'p-val']))
+
+        table_cell_text = []
+        table_cell_text.append(['x', x_axis_column])
+        table_cell_text.append(['', ''])
+        table_cell_text.append(['', ''])
+        table_cell_text.append(['y', y_axis_column])
+        table_cell_text.append(['', ''])
+        table_cell_text.append(['', ''])
+        table_cell_text.append(['covar', covar_column])
+        table_cell_text.append(['', ''])
+        table_cell_text.append(['', ''])
+        for stat_column in pcorr_stats.columns:
+            table_cell_text.append([stat_column, str(pcorr_stats.loc['pearson', stat_column])])
+            table_cell_text.append(['', ''])
+
+        stat_ax.table(cellText=table_cell_text, cellLoc='left', loc='upper left', edges='open')
 
     @staticmethod
     def normalise_values_per_animal(df, columns):
@@ -4474,97 +4238,44 @@ class FiringRateChangeAndTheta(object):
                 df.loc[idx, column] = zscore(df.loc[idx, column])
 
     @staticmethod
-    def plot(df, normalize_per_animal, axs, stat_axs):
+    def plot(df, axs, stat_axs):
 
-        columns = ['running_speed', 'rate change\n(euclidean)', 'theta_frequency']
+        df.rename(columns={'rate change\n(euclidean)': 'population activity change rate (z score)',
+                           'theta_frequency': 'theta frequency (z score)',
+                           'running_speed': 'running speed (z score)'},
+                  inplace=True)
 
-        df = df.copy(deep=True)
+        FiringRateChangeAndTheta.normalise_values_per_animal(df, ['theta frequency (z score)', 'running speed (z score)',
+                                                                  'population activity change rate (z score)'])
 
-        if normalize_per_animal:
-            FiringRateChangeAndTheta.normalise_values_per_animal(df, columns)
+        FiringRateChangeAndTheta.plot_single_relation(df, 'theta frequency (z score)', 'running speed (z score)',
+                                                      'population activity change rate (z score)',
+                                                      axs[0], stat_axs[0])
 
-        for column in columns:
-            df[column] = FiringRateChangeAndTheta.binned_values(df[column])
-            df.loc[df[column] == df[column].min(), column] = np.nan
-            df.loc[df[column] == df[column].max(), column] = np.nan
-
-        df = df.dropna()
-
-        for i in range(3):
-            for j in range(3):
-                if i == j:
-                    continue
-
-                covar_column = list(set(columns) - set([columns[i], columns[j]]))[0]
-
-                dfg = df.groupby(['animal', columns[i]])[[columns[j], covar_column]].mean().reset_index()
-
-                sns.scatterplot(
-                    data=dfg,
-                    x=columns[i],
-                    y=columns[j],
-                    ax=axs[j, i])
-
-                axs[j, i].set_xlabel('')
-                axs[j, i].set_ylabel('')
-
-                pcorr_stats = partial_corr(
-                    data=dfg,
-                    x=columns[i],
-                    y=columns[j],
-                    covar=covar_column
-                )
-
-                axs[j, i].set_title('r = {:.3f} | p = {:e}'.format(pcorr_stats.loc['pearson', 'r'],
-                                                                   pcorr_stats.loc['pearson', 'p-val']))
-
-                table_cell_text = []
-                table_cell_text.append(['x', columns[i]])
-                table_cell_text.append(['', ''])
-                table_cell_text.append(['', ''])
-                table_cell_text.append(['y', columns[j]])
-                table_cell_text.append(['', ''])
-                table_cell_text.append(['', ''])
-                table_cell_text.append(['covar', covar_column])
-                table_cell_text.append(['', ''])
-                table_cell_text.append(['', ''])
-                for stat_column in pcorr_stats.columns:
-                    table_cell_text.append([stat_column, str(pcorr_stats.loc['pearson', stat_column])])
-                    table_cell_text.append(['', ''])
-
-                stat_axs[j, i].table(cellText=table_cell_text, cellLoc='left', loc='upper left', edges='open')
-
-        for i in range(len(columns)):
-            axs[-1, i].set_xlabel(columns[i])
-
-        for j in range(len(columns)):
-            axs[j, 0].set_ylabel(columns[j])
-
-        for d in range(len(columns)):
-            axs[d, d].set_xticks([])
-            axs[d, d].set_yticks([])
+        FiringRateChangeAndTheta.plot_single_relation(df, 'population activity change rate (z score)',
+                                                      'theta frequency (z score)', 'running speed (z score)',
+                                                      axs[1], stat_axs[1])
 
     @staticmethod
-    def make_figure(fpath, normalize_per_animal):
+    def make_figure(fpath):
 
-        fig, axs = plt.subplots(3, 3, figsize=(12, 12))
-        plt.subplots_adjust(left=0.1, bottom=0.08, right=0.98, top=0.92, wspace=0.2, hspace=0.4)
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        plt.subplots_adjust(left=0.15, bottom=0.15, right=0.98, top=0.92, wspace=0.4, hspace=0.4)
 
-        stat_fig, stat_axs = plt.subplots(3, 3, figsize=(20, 20))
+        stat_fig, stat_axs = plt.subplots(1, 2, figsize=(14, 8))
         plt.tight_layout(pad=1.5)
         for stat_ax in stat_axs.flatten():
             stat_ax.set_xticks([], [])
             stat_ax.set_yticks([], [])
 
         FiringRateChangeAndTheta.plot(
-            pd.read_pickle(construct_df_population_vector_change_file_path(fpath)),
-            normalize_per_animal, axs, stat_axs
+            pd.read_pickle(construct_df_population_vector_change_file_path(fpath)), axs, stat_axs
         )
 
         return fig, stat_fig
 
     @staticmethod
-    def write(fpath, normalize_per_animal=False, prefix='', verbose=True):
+    def write(fpath, prefix='', verbose=True):
 
         figure_name = prefix + 'FiringRateChangeAndTheta'
 
@@ -4573,9 +4284,8 @@ class FiringRateChangeAndTheta(object):
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        fig, stat_fig = FiringRateChangeAndTheta.make_figure(fpath, normalize_per_animal)
+        fig, stat_fig = FiringRateChangeAndTheta.make_figure(fpath)
         fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
-        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.svg'.format(figure_name)))
         stat_fig.savefig(os.path.join(paper_figures_path(fpath), '{}_stats.png'.format(figure_name)))
         plt.close(fig)
         plt.close(stat_fig)
@@ -4585,25 +4295,40 @@ class FiringRateChangeAndTheta(object):
 
 
 def print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields):
-    df = df_fields[['animal', 'animal_unit']].copy(deep=True)
+
+    df = df_fields.loc[df_fields['experiment_id'] == 'exp_scales_d',
+                       ['animal', 'animal_unit', 'area']].copy(deep=True)
     df = df.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
                   how='left', on=['animal', 'animal_unit'])
-    df = df.loc[df['category'] == 'place_cell', ['animal', 'animal_unit']]  # Only keep place cell fields
+    df = df.loc[df['category'] == 'place_cell', ['animal', 'animal_unit', 'area']]  # Only keep place cell fields
     df['count'] = 1
-    df = df.groupby(['animal', 'animal_unit'])['count'].sum().reset_index()
-    df = df.merge(df_units[['animal', 'animal_unit', 'isolation_distance', 'l_ratio']], on=['animal', 'animal_unit'],
+    df = df.groupby(['animal', 'animal_unit'])['count', 'area'].sum().reset_index()
+    df['mean_area'] = df['area'] / df['count']
+
+    df = df.merge(df_units[['animal', 'animal_unit', 'isolation_distance', 'l_ratio']],
+                  on=['animal', 'animal_unit'],
                   how='left')
     df = df.dropna()
-    for measure in ('isolation_distance', 'l_ratio'):
-        print('Across animals correlation of {} to field count: r={:.3f} p={:.6f}'.format(measure,
-                                                                                          *pearsonr(df[measure],
-                                                                                                    df['count'])))
-        for animal in df['animal'].unique():
-            idx = df['animal'] == animal
-            print(
-                'Animal {} correlation of {} to field count: r={:.3f} p={:.6f} | total units = {} | fields per unit {:.2f}'.format(
-                    animal, measure, *pearsonr(df.loc[idx, measure], df.loc[idx, 'count']), np.sum(idx),
-                    np.mean(df.loc[idx, 'count'])))
+
+    for correlate in ('count', 'mean_area'):
+
+        print()
+        print('Comparing {} correlation with clustering quality measures'.format(correlate))
+
+        for measure in ('isolation_distance', 'l_ratio'):
+
+            print()
+            print('Clustering quality measure: {}'.format(measure))
+
+            print('Across animals correlation of {} to field {}: r={:.3f} p={:.6f}'.format(measure, correlate,
+                                                                                           *pearsonr(df[measure],
+                                                                                                     df[correlate])))
+            for animal in df['animal'].unique():
+                idx = df['animal'] == animal
+                print(
+                    'Animal {} correlation of {} to field {}: r={:.3f} p={:.6f} | total units = {} | {} per unit {:.2f}'.format(
+                        animal, measure, correlate, *pearsonr(df.loc[idx, measure], df.loc[idx, correlate]), np.sum(idx),
+                        correlate, np.mean(df.loc[idx, correlate])))
 
 
 def load_data_preprocessed_if_available(fpath, recompute=False, verbose=False):
@@ -4686,8 +4411,7 @@ def main(fpath):
 
     ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
     FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
-    FieldDetectionInRecordingHalves.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
-    IntraTrialCorrelations.write(fpath, all_recordings, prefix='Figure_1_sup_4_')
+    IntraTrialCorrelations.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
     PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
     FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
     Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
@@ -4704,17 +4428,16 @@ def main(fpath):
     FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
     FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
     FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
-    AverageActivity.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3EF_')
-    FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_3G_')
-    FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_3H_')
+    AverageActivity.write(fpath, all_recordings, prefix='Figure_4AB_')
+    FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_4C_')
+    FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_4D_')
     FieldDensityByDwell.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_1_')
     FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
-    AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_3_')
-    InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_3_sup_4_')
-    FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_4AB_')
-    FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_4_sup_1_')
-    FiringRateChangeAndTheta.write(fpath, normalize_per_animal=False, prefix='Figure_R1_')
-    FiringRateChangeAndTheta.write(fpath, normalize_per_animal=True, prefix='Figure_R1_normalized_')
+    AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_4_sup_1_')
+    InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_4_sup_2_')
+    FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
+    FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
+    FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
 
     print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
 
