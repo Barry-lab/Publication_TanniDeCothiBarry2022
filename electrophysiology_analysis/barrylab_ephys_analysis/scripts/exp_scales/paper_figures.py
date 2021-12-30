@@ -4416,7 +4416,7 @@ def main(fpath):
     FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
     Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
     environment_field_density_model_parameters = \
-        FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2D_')
+        FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2E_')
     ConservationOfFieldFormationPropensity.write(fpath, df_units, df_fields,
                                                  environment_field_density_model_parameters, prefix='Figure_2_sup_2_')
     gamma_model_fit = \
@@ -4424,7 +4424,7 @@ def main(fpath):
                                               prefix='Figure_2_sup_3_')
     PlaceCellsDetectedAcrossEnvironments.write(fpath, df_units, df_fields,
                                                environment_field_density_model_parameters, gamma_model_fit,
-                                               prefix='Figure_2E_')
+                                               prefix='Figure_2D_')
     FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
     FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
     FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
