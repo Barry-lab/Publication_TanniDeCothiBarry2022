@@ -5,6 +5,7 @@ import numpy as np
 from multiprocessing import Process
 from tqdm import tqdm
 import pandas as pd
+from elephant import spectral
 
 
 from barrylab_ephys_analysis.blea_utils import argparse_to_kwargs
@@ -19,6 +20,10 @@ from barrylab_ephys_analysis.spikes.correlograms import (create_correlation_bin_
                                                          auto_correlation)
 from barrylab_ephys_analysis.spatial.fields import detect_fields, compute_field_stability
 from barrylab_ephys_analysis.models.decoding import FlatPriorBayesPositionDecoding
+
+from barrylab_ephys_analysis.lfp.oscillations import (FrequencyBandAmplitude,
+                                                      FrequencyBandFrequency,
+                                                      FrequencyBandPhase)
 
 from barrylab_ephys_analysis.scripts.exp_scales import load
 from barrylab_ephys_analysis.scripts.exp_scales.params import Params
@@ -771,6 +776,154 @@ class PositionDecoding(object):
         del recordings
 
 
+def find_tetrode_with_most_units_in_each_channel_group(recordings):
+
+    tetrodes_with_place_cells = []
+    for i in range(len(recordings.units)):
+        unit = recordings.first_available_recording_unit(i)
+        if unit['analysis']['category'] == 'place_cell':
+            tetrodes_with_place_cells.append(unit['tetrode_nr'])
+    tetrodes_with_place_cells, place_cell_counts = np.unique(tetrodes_with_place_cells, return_counts=True)
+    tetrode_areas = np.array(list(
+        map(lambda tetrode_nr: recordings[0].tetrode_channel_group(tetrode_nr, recordings[0].channel_map),
+            tetrodes_with_place_cells)
+    ))
+
+    max_place_cell_tetrode = {}
+    for channel_group in recordings[0].channel_map:
+        idx = tetrode_areas == channel_group
+        max_place_cell_tetrode[channel_group] = \
+            tetrodes_with_place_cells[idx][int(np.argmax(place_cell_counts[idx]))]
+
+    return max_place_cell_tetrode
+
+
+def preprocess_animal_lfp_spectral_overview(recordings=None, fpaths=None, recompute=False, verbose=True, **kwargs):
+
+    if recordings is None and fpaths is None:
+        raise ValueError('Either recordings or fpaths must be provided')
+
+    if fpaths is None:
+        fpaths = recordings.fpaths
+
+    if recompute:
+        spectral_data_available = [False]
+    else:
+        # Check if data is available in file
+        spectral_data_available = []
+        for fpath in fpaths:
+            spectral_data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'spectral_overview'
+                )
+            )
+
+    if all(spectral_data_available):
+        return recordings
+
+    if recordings is None:
+        recordings = load_recordings_and_correct_experiment_ids(fpaths, verbose=verbose, **kwargs)
+
+    create_df_fields_for_recordings(recordings)
+
+    if verbose:
+        print('Computing spectral overview for animal {}'.format(recordings[0].info['animal']))
+
+    # Find tetrodes with most place cells in both hemispheres
+    max_place_cell_tetrode = find_tetrode_with_most_units_in_each_channel_group(recordings)
+
+    # Compute power spectral density for the max place cell tetrode in each group for all recordings
+
+    for recording in recordings:
+
+        recording.analysis['spectral_overview'] = {}
+
+        for channel_group in recording.channel_map:
+
+            frequencies, psd = spectral.welch_psd(
+                recording.continuous['continuous'][:, max_place_cell_tetrode[channel_group]],
+                freq_res=0.1,
+                fs=recording.continuous['sampling_rate']
+            )
+
+            recording.analysis['spectral_overview'][channel_group] = {
+                'tetrode_nr': max_place_cell_tetrode[channel_group],
+                'frequencies': frequencies,
+                'psd': psd
+            }
+
+    return recordings
+
+
+def preprocess_animal_theta(recordings=None, fpaths=None, recompute=False, verbose=True, **kwargs):
+
+    if recordings is None and fpaths is None:
+        raise ValueError('Either recordings or fpaths must be provided')
+
+    if fpaths is None:
+        fpaths = recordings.fpaths
+
+    if recompute:
+        data_available = [False]
+    else:
+        # Check if data is available in file
+        data_available = []
+        for fpath in fpaths:
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_amplitude'
+                )
+            )
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_phase'
+                )
+            )
+            data_available.append(
+                check_if_analysis_field_in_file(
+                    fpath,
+                    'analog_signals/theta_frequency'
+                )
+            )
+
+    if all(data_available):
+        return recordings
+
+    if recordings is None:
+        recordings = load_recordings_and_correct_experiment_ids(fpaths, verbose=verbose, **kwargs)
+
+    if verbose:
+        print('Computing theta analog signals for animal {}'.format(recordings[0].info['animal']))
+
+    for recording in recordings:
+
+        channel_group_tetrodes = {channel_group: item['tetrode_nr']
+                                  for channel_group, item in recording.analysis['spectral_overview'].items()}
+
+        theta_amplitude = FrequencyBandAmplitude(recording, 'theta_amplitude',
+                                                 channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                                 **Params.theta_amplitude)
+
+        theta_phase = FrequencyBandPhase(recording, 'theta_phase',
+                                         channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                         **Params.theta_phase)
+
+        theta_frequency = FrequencyBandFrequency(recording, 'theta_frequency',
+                                                 channel_group_tetrodes=channel_group_tetrodes, verbose=verbose,
+                                                 **Params.theta_frequency)
+
+        analog_signals = (theta_amplitude, theta_phase, theta_frequency)
+
+        for analog_signal in analog_signals:
+            analog_signal.compute(recompute=True)
+            analog_signal.add_to_recording()
+
+    return recordings
+
+
 def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=False, **kwargs):
     """Performs pre-processing all recordings of a single (first) day found at fpath for animal_id.
 
@@ -837,6 +990,21 @@ def preprocess_animal(fpath, animal_id, recompute=False, save=True, verbose=Fals
     )
 
     recordings = assign_unit_categories_if_not_available(
+        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
+        **kwargs
+    )
+
+    if save and not (recordings is None):
+        if verbose:
+            print('Saving intermediate results for animal {}'.format(animal_id))
+        recordings.save_analysis()
+
+    recordings = preprocess_animal_lfp_spectral_overview(
+        recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
+        **kwargs
+    )
+
+    recordings = preprocess_animal_theta(
         recordings=recordings, fpaths=fpaths, recompute=recompute, verbose=verbose,
         **kwargs
     )

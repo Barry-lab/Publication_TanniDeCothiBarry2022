@@ -475,7 +475,8 @@ def add_stat_annotation_with_n_vals(ax, df, x, y, order=None, hue=None, box_pair
 
 
 def plot_raincloud(ax, x, y, df, groups_order=None, ort='v', whis=(5, 95), hue=None, hue_order=None,
-                   palette=None, data_selection_label_kwargs=None, bound_kda_by_95_percentiles=True):
+                   palette=None, data_selection_label_kwargs=None, bound_kda_by_95_percentiles=True,
+                   stripplot_size=1):
 
     ptitprince.half_violinplot(x=x, y=y, data=df, order=groups_order, hue=hue, hue_order=hue_order,
                                bw=.2, cut=0., scale="area", width=.6, palette=palette,
@@ -488,7 +489,7 @@ def plot_raincloud(ax, x, y, df, groups_order=None, ort='v', whis=(5, 95), hue=N
                 saturation=1, orient=ort, ax=ax)
     ylim = ax.get_ylim()
     sns.stripplot(x=x, y=y, data=df, order=groups_order, hue=hue, hue_order=hue_order,
-                  orient=ort, palette=palette, ax=ax, size=1, zorder=-1)
+                  orient=ort, palette=palette, ax=ax, size=stripplot_size, zorder=-1)
     ax.set_ylim(ylim)
     ax.set_xlabel('')
 
@@ -501,10 +502,12 @@ def plot_raincloud(ax, x, y, df, groups_order=None, ort='v', whis=(5, 95), hue=N
 def plot_raincloud_and_stats(x, y, df, ax, stat_ax, x_order, pairwise_stats_on_plot=True,
                              pairwise_test='Mann-Whitney', data_selection_label_kwargs=None,
                              cut_kde_to_95_percentile=False, group_test_bonferroni_m=1,
-                             apply_bonferroni_correction_to_pairwise_tests=False, palette=None):
+                             apply_bonferroni_correction_to_pairwise_tests=False, palette=None,
+                             stripplot_size=1):
 
     plot_raincloud(ax, x, y, df, groups_order=x_order, ort='v', whis=(5, 95), palette=palette,
-                   data_selection_label_kwargs=data_selection_label_kwargs)
+                   data_selection_label_kwargs=data_selection_label_kwargs,
+                   stripplot_size=stripplot_size)
 
     kruskal_h_value, kruskal_pvalue = \
         kruskal(*[df[df[x] == group][y] for group in x_order])
