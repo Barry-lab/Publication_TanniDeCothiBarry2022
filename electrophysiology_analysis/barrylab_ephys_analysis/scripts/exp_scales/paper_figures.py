@@ -37,7 +37,7 @@ from barrylab_ephys_analysis.scripts.exp_scales import load
 from barrylab_ephys_analysis.scripts.exp_scales.paper_preprocess import preprocess_and_save_all_animals, \
     create_df_fields_for_recordings, create_unit_data_frames_for_recordings
 from barrylab_ephys_analysis.spatial.fields import compute_field_contour
-from barrylab_ephys_analysis.spikes.utils import count_spikes_in_sample_bins
+from barrylab_ephys_analysis.spikes.utils import count_spikes_in_sample_bins, convert_spike_times_to_sample_indices
 from barrylab_ephys_analysis.lfp.oscillations import FrequencyBandFrequency
 
 
@@ -4294,6 +4294,278 @@ class FiringRateChangeAndTheta(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
+class StabilityAndLastWallPlots(object):
+
+    wall_touch_threshold = 20
+    wall_markers = ['N', 'E', 'S', 'W']
+
+    @staticmethod
+    def get_df_with_place_cell_fields_in_middle(df_units, df_fields):
+        df = df_fields.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
+                      how='left', on=['animal', 'animal_unit'])
+        df = df[(df['category'] == 'place_cell') & (df['experiment_id'] == 'exp_scales_d')]
+        return df.loc[(df['peak_nearest_wall'] > 50) & (df['peak_nearest_wall'] < 100)].copy()
+
+    @staticmethod
+    def position_sample_wall_indices(position_xy):
+
+        east_wall = 350 - StabilityAndLastWallPlots.wall_touch_threshold
+        south_wall = 250 - StabilityAndLastWallPlots.wall_touch_threshold
+
+        last_wall = 'X'
+        position_sample_wall_indices = []
+        for x, y in position_xy:
+
+            if x < StabilityAndLastWallPlots.wall_touch_threshold:
+                last_wall = 'W'
+            elif x > east_wall:
+                last_wall = 'E'
+            elif y < 20:
+                last_wall = 'N'
+            elif y > south_wall:
+                last_wall = 'S'
+
+            position_sample_wall_indices.append(last_wall)
+
+        return np.array(position_sample_wall_indices)
+
+    @staticmethod
+    def plot_spike_rate_plot(ax, recording, df, legend=False):
+        ax.plot(*recording.position['xy'].T, 'k', linewidth=0.2, zorder=-1)
+
+        sns.scatterplot(data=df, x='x', y='y', hue='wall', ax=ax,
+                        s=10, palette='colorblind', legend=legend,
+                        hue_order=StabilityAndLastWallPlots.wall_markers, zorder=1)
+
+        ax.set_aspect('equal', 'box')
+        ax.set_xlim(spatial_windows['exp_scales_d'][:2])
+        ax.set_ylim(spatial_windows['exp_scales_d'][2:][::-1])
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+
+        if legend:
+            ax.legend(loc='lower left', bbox_to_anchor=(0, 1), ncol=4)
+
+    @staticmethod
+    def plot_spike_plots(axs, recording, spike_timestamps, position_sample_indices,
+                         unit_position_sample_wall_indices, legend=False):
+
+        df = pd.DataFrame({
+            'x': recording.position['xy'][position_sample_indices, 0],
+            'y': recording.position['xy'][position_sample_indices, 1],
+            'timestamp': spike_timestamps,
+            'wall': unit_position_sample_wall_indices
+        })
+
+        recording_midpoint = (recording.info['last_timestamp'] - recording.info['first_timestamp']) / 2.
+
+        StabilityAndLastWallPlots.plot_spike_rate_plot(
+            axs[0], recording, df.loc[df['timestamp'] < recording_midpoint], legend=legend
+        )
+        StabilityAndLastWallPlots.plot_spike_rate_plot(
+            axs[1], recording, df.loc[df['timestamp'] >= recording_midpoint], legend=False
+        )
+
+    @staticmethod
+    def get_spikes_and_position(recording, unit, position_sample_wall_indices):
+
+        spike_timestamps = unit['timestamps']
+        position_sample_indices = convert_spike_times_to_sample_indices(spike_timestamps,
+                                                                        recording.position['sampling_rate'])
+        unit_position_sample_wall_indices = position_sample_wall_indices[position_sample_indices]
+
+        # Filter by speed
+        idx_passed_filter = recording.position['analysis']['ratemap_speed_mask'][position_sample_indices]
+        # Filter by position not near boundary
+        spike_xy = recording.position['xy'][position_sample_indices, :]
+        east_wall = 350 - StabilityAndLastWallPlots.wall_touch_threshold
+        south_wall = 250 - StabilityAndLastWallPlots.wall_touch_threshold
+        idx_passed_filter = (
+                idx_passed_filter
+                & (spike_xy[:, 0] > StabilityAndLastWallPlots.wall_touch_threshold)
+                & (spike_xy[:, 1] > StabilityAndLastWallPlots.wall_touch_threshold)
+                & (spike_xy[:, 0] < east_wall)
+                & (spike_xy[:, 1] < south_wall)
+        )
+        # Filter by valid wall
+        idx_passed_filter = idx_passed_filter & (unit_position_sample_wall_indices != 'X')
+        # Apply filter
+        spike_timestamps = spike_timestamps[idx_passed_filter]
+        position_sample_indices = position_sample_indices[idx_passed_filter]
+        unit_position_sample_wall_indices = unit_position_sample_wall_indices[idx_passed_filter]
+
+        return spike_timestamps, position_sample_indices, unit_position_sample_wall_indices
+
+    @staticmethod
+    def plot_wall_touch_ratemap(ax, recording, spike_timestamps, position_sample_indices,
+                                unit_position_sample_wall_indices):
+
+        spatial_window = spatial_windows['exp_scales_d']
+
+        ratemaps = []
+        ratemap_shape = None
+        peak_rate = 0
+        for wall_marker in StabilityAndLastWallPlots.wall_markers:
+
+            idx_wall = unit_position_sample_wall_indices == wall_marker
+
+            if not np.any(idx_wall):
+                ratemaps.append(None)
+                continue
+
+            spatial_ratemap = SpatialRatemap(
+                recording.position['xy'],
+                spike_timestamps[idx_wall],
+                recording.position['sampling_rate'],
+                Params.spatial_ratemap['bin_size'],
+                spatial_window=spatial_window,
+                spike_xy_ind=position_sample_indices[idx_wall],
+                xy_mask=recording.position['analysis']['ratemap_speed_mask']
+            )
+            ratemap = spatial_ratemap.spike_rates_smoothed(
+                n_bins=Params.spatial_ratemap['n_smoothing_bins'],
+                method=Params.spatial_ratemap['smoothing_method']
+            )
+            ratemaps.append(ratemap)
+            ratemap_shape = ratemap.shape
+            peak_rate = max(peak_rate, np.nanmax(ratemap))
+
+        aggregate_ratemap = np.zeros((*ratemap_shape, 3))
+        if not (ratemaps[0] is None):
+            aggregate_ratemap[:, :, 0] = ratemaps[0] / peak_rate
+        if not (ratemaps[1] is None):
+            aggregate_ratemap[:, :, 1] = ratemaps[1] / peak_rate
+        if not (ratemaps[2] is None):
+            aggregate_ratemap[:, :, 2] = ratemaps[2] / peak_rate
+
+        aggregate_ratemap = aggregate_ratemap / 2
+        if not (ratemaps[3] is None):
+            aggregate_ratemap = aggregate_ratemap + np.stack([(ratemaps[3] / peak_rate) / 2] * 3, axis=2)
+
+        extent = (spatial_window[0], spatial_window[1],
+                  spatial_window[3], spatial_window[2])
+
+        ax.imshow(aggregate_ratemap, extent=extent)
+
+    @staticmethod
+    def plot_both_wall_touch_ratemaps(axs, recording, spike_timestamps,
+                                      position_sample_indices, unit_position_sample_wall_indices):
+
+        recording_midpoint = (recording.info['last_timestamp'] - recording.info['first_timestamp']) / 2.
+
+        idx_1st_half = spike_timestamps < recording_midpoint
+        idx_2nd_half = spike_timestamps >= recording_midpoint
+
+        for ax, spike_mask in zip(axs, (idx_1st_half, idx_2nd_half)):
+            StabilityAndLastWallPlots.plot_wall_touch_ratemap(
+                ax, recording, spike_timestamps[spike_mask], position_sample_indices[spike_mask],
+                unit_position_sample_wall_indices[spike_mask]
+            )
+
+    @staticmethod
+    def plot(all_recordings, df, axs):
+
+        animal_recordings = {}
+        animal_recording_indices = {}
+        position_sample_wall_indices = {}
+        for recordings in all_recordings:
+            for i_recording, recording in enumerate(recordings):
+                if recording.info['experiment_id'] == 'exp_scales_d':
+                    animal_recordings[recording.info['animal']] = recordings
+                    animal_recording_indices[recording.info['animal']] = i_recording
+                    position_sample_wall_indices[recording.info['animal']] = \
+                        StabilityAndLastWallPlots.position_sample_wall_indices(recording.position['xy'])
+
+        legend = True
+        for i, unit_index in enumerate(df['unit'].unique()):
+
+            df_unit_fields = df.loc[df['unit'] == unit_index]
+            field_row = df_unit_fields.iloc[0]
+            animal = field_row['animal']
+            animal_unit_index = field_row['animal_unit']
+
+            recordings = animal_recordings[animal]
+            recording = recordings[animal_recording_indices[animal]]
+            unit = recordings.units[animal_unit_index][animal_recording_indices[animal]]
+
+            spike_timestamps, position_sample_indices, unit_position_sample_wall_indices = \
+                StabilityAndLastWallPlots.get_spikes_and_position(recording, unit, position_sample_wall_indices[animal])
+
+            table_cell_text = [['animal', animal],
+                               ['', ''],
+                               ['animal_unit', str(animal_unit_index)],
+                               ['', ''],
+                               ['animal_fields', ','.join(map(str, df_unit_fields['animal_field']))]]
+
+            axs[i, 0].table(cellText=table_cell_text, cellLoc='left', loc='center left', edges='open')
+            axs[i, 0].axis('off')
+
+            ratemap_half_a = unit['analysis']['spatial_ratemaps']['spike_rates_halves']['first']
+            ratemap_half_b = unit['analysis']['spatial_ratemaps']['spike_rates_halves']['second']
+
+            SpatialRatemap.plot(ratemap_half_a, spatial_windows['exp_scales_d'], ax=axs[i, 1],
+                                colorbar=True, cmap='jet')
+            SpatialRatemap.plot(ratemap_half_b, spatial_windows['exp_scales_d'], ax=axs[i, 2],
+                                colorbar=True, cmap='jet')
+
+            StabilityAndLastWallPlots.plot_spike_plots(
+                axs[i, 3:5], recording,
+                spike_timestamps, position_sample_indices,
+                unit_position_sample_wall_indices,
+                legend=legend
+            )
+            if legend:
+                legend = False
+
+            StabilityAndLastWallPlots.plot_both_wall_touch_ratemaps(
+                axs[i, 5:], recording, spike_timestamps, position_sample_indices, unit_position_sample_wall_indices
+            )
+
+            contours = [compute_field_contour(recordings[0].analysis['fields'][i]['ratemap'])
+                        for i in df_unit_fields['animal_field']]
+            contours_spatial_window = \
+                list(spatial_windows['exp_scales_d'][:2]) + list(spatial_windows['exp_scales_d'][2:])[::-1]
+            for contour in contours:
+                for ax in axs[i, 1:]:
+                    SpatialRatemap.plot_contours(
+                        contour, ax, color='green',
+                        ratemap_shape=ratemap_half_a.shape,
+                        spatial_window=contours_spatial_window
+                    )
+
+    @staticmethod
+    def make_figure(all_recordings, df_units, df_fields):
+
+        df = StabilityAndLastWallPlots.get_df_with_place_cell_fields_in_middle(df_units, df_fields)
+        number_of_units = df['unit'].unique().size
+
+        fig, axs = plt.subplots(number_of_units, 7, figsize=(30, 3 * number_of_units))
+        plt.subplots_adjust(left=0.025, bottom=0.01, right=0.99, top=0.95, wspace=0.4, hspace=0.01 / number_of_units)
+
+        StabilityAndLastWallPlots.plot(
+            all_recordings, df, axs
+        )
+
+        return fig
+
+    @staticmethod
+    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
+
+        figure_name = prefix + 'StabilityAndLastWallPlots'
+
+        if verbose:
+            print('Writing Figure {}'.format(figure_name))
+
+        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
+
+        fig = StabilityAndLastWallPlots.make_figure(all_recordings, df_units, df_fields)
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
+        plt.close(fig)
+
+        if verbose:
+            print('Writing Figure {} Done.'.format(figure_name))
+
+
 def print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields):
 
     df = df_fields.loc[df_fields['experiment_id'] == 'exp_scales_d',
@@ -4378,68 +4650,69 @@ def link_df_units_and_df_fields_with_common_unit(df_units, df_fields):
 
 def main(fpath):
 
-    all_recordings = load_data_preprocessed_if_available(fpath, recompute=False, verbose=True)
-
-    # Rename experiment name in  last recording so it would not have the same as the first
-    for recordings in all_recordings:
-        snippets.rename_last_recording_a2(recordings)
-
-    for recordings in all_recordings:
-        create_df_fields_for_recordings(recordings)
-
-    for recordings in all_recordings:
-        create_unit_data_frames_for_recordings(recordings)
-
-    df_fields = get_full_df_fields(all_recordings)
-    df_units = get_full_df_units(all_recordings)
-    link_df_units_and_df_fields_with_common_unit(df_units, df_fields)
-
-    df_fields.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_fields.p'))
-    df_units.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_units.p'))
-
-    with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'wb') as pfile:
-        pickle.dump(all_recordings, pfile)
-
-    # # Use this instead if data has already been loaded once
-    # with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'rb') as pfile:
-    #     all_recordings = pickle.load(pfile)
+    # all_recordings = load_data_preprocessed_if_available(fpath, recompute=False, verbose=True)
     #
-    # df_units = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_units.p'))
-    # df_fields = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_fields.p'))
+    # # Rename experiment name in  last recording so it would not have the same as the first
+    # for recordings in all_recordings:
+    #     snippets.rename_last_recording_a2(recordings)
+    #
+    # for recordings in all_recordings:
+    #     create_df_fields_for_recordings(recordings)
+    #
+    # for recordings in all_recordings:
+    #     create_unit_data_frames_for_recordings(recordings)
+    #
+    # df_fields = get_full_df_fields(all_recordings)
+    # df_units = get_full_df_units(all_recordings)
+    # link_df_units_and_df_fields_with_common_unit(df_units, df_fields)
+    #
+    # df_fields.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_fields.p'))
+    # df_units.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_units.p'))
+    #
+    # with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'wb') as pfile:
+    #     pickle.dump(all_recordings, pfile)
+
+    # Use this instead if data has already been loaded once
+    with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'rb') as pfile:
+        all_recordings = pickle.load(pfile)
+
+    df_units = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_units.p'))
+    df_fields = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_fields.p'))
 
     # Compute and write figures
 
-    ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
-    FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
-    IntraTrialCorrelations.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
-    PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
-    FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
-    Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
-    environment_field_density_model_parameters = \
-        FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2E_')
-    ConservationOfFieldFormationPropensity.write(fpath, df_units, df_fields,
-                                                 environment_field_density_model_parameters, prefix='Figure_2_sup_2_')
-    gamma_model_fit = \
-        FieldsPerCellAcrossEnvironments.write(fpath, df_units, df_fields, environment_field_density_model_parameters,
-                                              prefix='Figure_2_sup_3_')
-    PlaceCellsDetectedAcrossEnvironments.write(fpath, df_units, df_fields,
-                                               environment_field_density_model_parameters, gamma_model_fit,
-                                               prefix='Figure_2D_')
-    FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
-    FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
-    FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
-    AverageActivity.write(fpath, all_recordings, prefix='Figure_4AB_')
-    FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_4C_')
-    FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_4D_')
-    FieldDensityByDwell.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_1_')
-    FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
-    AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_4_sup_1_')
-    InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_4_sup_2_')
-    FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
-    FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
-    FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
+    # ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
+    # FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
+    # IntraTrialCorrelations.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
+    # PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
+    # FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
+    # Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
+    # environment_field_density_model_parameters = \
+    #     FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2E_')
+    # ConservationOfFieldFormationPropensity.write(fpath, df_units, df_fields,
+    #                                              environment_field_density_model_parameters, prefix='Figure_2_sup_2_')
+    # gamma_model_fit = \
+    #     FieldsPerCellAcrossEnvironments.write(fpath, df_units, df_fields, environment_field_density_model_parameters,
+    #                                           prefix='Figure_2_sup_3_')
+    # PlaceCellsDetectedAcrossEnvironments.write(fpath, df_units, df_fields,
+    #                                            environment_field_density_model_parameters, gamma_model_fit,
+    #                                            prefix='Figure_2D_')
+    # FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
+    # FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
+    # FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
+    # AverageActivity.write(fpath, all_recordings, prefix='Figure_4AB_')
+    # FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_4C_')
+    # FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_4D_')
+    # FieldDensityByDwell.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_1_')
+    # FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
+    # AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_4_sup_1_')
+    # InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_4_sup_2_')
+    # FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
+    # FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
+    # FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
+    StabilityAndLastWallPlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R2_')
 
-    print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
+    # print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
 
 
 if __name__ == '__main__':

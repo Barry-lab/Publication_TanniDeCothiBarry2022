@@ -586,9 +586,9 @@ class SpatialRatemap(object):
         ))
 
     @staticmethod
-    def plot_contours(contour, ax, linewidth=3, color=None):
-        image_shape = ax.get_images()[0].properties()['array'].shape
-        spatial_window = ax.get_images()[0].properties()['extent']
+    def plot_contours(contour, ax, linewidth=3, color=None, ratemap_shape=None, spatial_window=None):
+        image_shape = ax.get_images()[0].properties()['array'].shape if ratemap_shape is None else ratemap_shape
+        spatial_window = ax.get_images()[0].properties()['extent'] if spatial_window is None else spatial_window
 
         x_bins, y_bins = SpatialRatemap.compute_bin_centers_from_spatial_window_and_shape(
             image_shape, spatial_window
