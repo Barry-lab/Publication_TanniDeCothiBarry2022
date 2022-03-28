@@ -4566,6 +4566,143 @@ class StabilityAndLastWallPlots(object):
             print('Writing Figure {} Done.'.format(figure_name))
 
 
+class TrajectoryAndSpikePlots(object):
+
+    wall_proximity_threshold = 20
+    wall_distance_threshold = 50
+    wall_max_distance = 100
+
+    @staticmethod
+    def get_df_with_place_cell_fields_in_good_distances(df_units, df_fields):
+        df = df_fields.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
+                             how='left', on=['animal', 'animal_unit'])
+        df = df[(df['category'] == 'place_cell') & (df['experiment_id'] == 'exp_scales_d')]
+        idx_close_to_wall = df['peak_nearest_wall'] < TrajectoryAndSpikePlots.wall_proximity_threshold
+        idx_far_from_wall = (df['peak_nearest_wall'] > TrajectoryAndSpikePlots.wall_distance_threshold) \
+                            & (df['peak_nearest_wall'] < TrajectoryAndSpikePlots.wall_max_distance)
+        return df.loc[idx_close_to_wall | idx_far_from_wall].copy()
+
+    @staticmethod
+    def get_spikes_and_position(recording, unit):
+
+        spike_timestamps = unit['timestamps']
+        position_sample_indices = convert_spike_times_to_sample_indices(spike_timestamps,
+                                                                        recording.position['sampling_rate'])
+
+        # Filter by speed
+        idx_passed_filter = recording.position['analysis']['ratemap_speed_mask'][position_sample_indices]
+        # Filter by position not near boundary
+        spike_xy = recording.position['xy'][position_sample_indices, :]
+        east_wall = 350
+        south_wall = 250
+        idx_passed_filter = (
+                idx_passed_filter
+                & (spike_xy[:, 0] > 0)
+                & (spike_xy[:, 1] > 0)
+                & (spike_xy[:, 0] < east_wall)
+                & (spike_xy[:, 1] < south_wall)
+        )
+        # Apply filter
+        spike_timestamps = spike_timestamps[idx_passed_filter]
+        position_sample_indices = position_sample_indices[idx_passed_filter]
+
+        return spike_timestamps, position_sample_indices
+
+    @staticmethod
+    def plot_spike_plots(ax, recording, spike_timestamps, position_sample_indices):
+        df = pd.DataFrame({
+            'x': recording.position['xy'][position_sample_indices, 0],
+            'y': recording.position['xy'][position_sample_indices, 1],
+            'timestamp': spike_timestamps
+        })
+
+        ax.plot(*recording.position['xy'].T, 'k', linewidth=0.2, zorder=-1)
+
+        sns.scatterplot(data=df, x='x', y='y', ax=ax,
+                        s=10, color='red', legend=False, zorder=1)
+
+        ax.set_aspect('equal', 'box')
+        ax.set_xlim(spatial_windows['exp_scales_d'][:2])
+        ax.set_ylim(spatial_windows['exp_scales_d'][2:][::-1])
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+
+    @staticmethod
+    def plot(all_recordings, df, axs):
+
+        animal_recordings = {}
+        animal_recording_indices = {}
+        for recordings in all_recordings:
+            for i_recording, recording in enumerate(recordings):
+                if recording.info['experiment_id'] == 'exp_scales_d':
+                    animal_recordings[recording.info['animal']] = recordings
+                    animal_recording_indices[recording.info['animal']] = i_recording
+
+        axs = axs.flatten()
+        for i, unit_index in enumerate(df['unit'].unique()):
+
+            df_unit_fields = df.loc[df['unit'] == unit_index]
+            field_row = df_unit_fields.iloc[0]
+            animal = field_row['animal']
+            animal_unit_index = field_row['animal_unit']
+
+            recordings = animal_recordings[animal]
+            recording = recordings[animal_recording_indices[animal]]
+            unit = recordings.units[animal_unit_index][animal_recording_indices[animal]]
+
+            spike_timestamps, position_sample_indices = \
+                TrajectoryAndSpikePlots.get_spikes_and_position(recording, unit)
+
+            TrajectoryAndSpikePlots.plot_spike_plots(axs[i], recording, spike_timestamps, position_sample_indices)
+
+            contours = [compute_field_contour(recordings[0].analysis['fields'][i]['ratemap'])
+                        for i in df_unit_fields['animal_field']]
+            contours_spatial_window = \
+                list(spatial_windows['exp_scales_d'][:2]) + list(spatial_windows['exp_scales_d'][2:])[::-1]
+            for contour in contours:
+                SpatialRatemap.plot_contours(
+                    contour, axs[i], color='blue',
+                    ratemap_shape=recording.units[0]['analysis']['spatial_ratemaps']['spike_rates_smoothed'].shape,
+                    spatial_window=contours_spatial_window
+                )
+
+            axs[i].set_title('{} | {}'.format(animal, animal_unit_index))
+
+    @staticmethod
+    def make_figure(all_recordings, df_units, df_fields):
+
+        df = TrajectoryAndSpikePlots.get_df_with_place_cell_fields_in_good_distances(df_units, df_fields)
+        number_of_units = df['unit'].unique().size
+
+        number_of_rows = number_of_units // 5 + 1
+
+        fig, axs = plt.subplots(number_of_rows, 5, figsize=(25, 4 * number_of_rows))
+        plt.subplots_adjust(left=0.025, bottom=0.01, right=0.99, top=0.95, wspace=0.4, hspace=0.01 / number_of_rows)
+
+        TrajectoryAndSpikePlots.plot(
+            all_recordings, df, axs
+        )
+
+        return fig
+
+    @staticmethod
+    def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
+
+        figure_name = prefix + 'TrajectoryAndSpikePlots'
+
+        if verbose:
+            print('Writing Figure {}'.format(figure_name))
+
+        sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
+
+        fig = TrajectoryAndSpikePlots.make_figure(all_recordings, df_units, df_fields)
+        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
+        plt.close(fig)
+
+        if verbose:
+            print('Writing Figure {} Done.'.format(figure_name))
+
+
 def print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields):
 
     df = df_fields.loc[df_fields['experiment_id'] == 'exp_scales_d',
@@ -4710,7 +4847,8 @@ def main(fpath):
     # FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
     # FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
     # FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
-    StabilityAndLastWallPlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R2_')
+    # StabilityAndLastWallPlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R2_')
+    TrajectoryAndSpikePlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R3_')
 
     # print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
 
