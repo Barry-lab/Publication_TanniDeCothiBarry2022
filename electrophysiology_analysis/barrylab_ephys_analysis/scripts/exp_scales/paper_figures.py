@@ -4303,11 +4303,17 @@ class StabilityAndLastWallPlots(object):
     wall_markers = ['N', 'E', 'S', 'W']
 
     @staticmethod
-    def get_df_with_place_cell_fields_in_middle(df_units, df_fields):
+    def get_df_with_place_cell_fields_in_middle(df_units, df_fields, df_to_use):
         df = df_fields.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
-                      how='left', on=['animal', 'animal_unit'])
+                             how='left', on=['animal', 'animal_unit'])
         df = df[(df['category'] == 'place_cell') & (df['experiment_id'] == 'exp_scales_d')]
-        return df.loc[(df['peak_nearest_wall'] > 50) & (df['peak_nearest_wall'] < 100)].copy()
+        df = df.loc[(df['peak_nearest_wall'] > 50) & (df['peak_nearest_wall'] < 100)]
+        df_to_use['use'] = True
+        df_to_use.rename(columns={'Animal': 'animal', 'Unit': 'animal_unit'}, inplace=True)
+        df = df.merge(df_to_use, how='left', on=['animal', 'animal_unit'])
+        df['use'].fillna(False, inplace=True)
+
+        return df.loc[df['use']].copy()
 
     @staticmethod
     def position_sample_wall_indices(position_xy):
@@ -4466,7 +4472,7 @@ class StabilityAndLastWallPlots(object):
             )
 
     @staticmethod
-    def plot(all_recordings, df, axs):
+    def plot(all_recordings, df):
 
         animal_recordings = {}
         animal_recording_indices = {}
@@ -4479,8 +4485,15 @@ class StabilityAndLastWallPlots(object):
                     position_sample_wall_indices[recording.info['animal']] = \
                         StabilityAndLastWallPlots.position_sample_wall_indices(recording.position['xy'])
 
+        figs = []
         legend = True
         for i, unit_index in enumerate(df['unit'].unique()):
+
+            fig, axs = plt.subplots(2, 3, figsize=(15, 6))
+            if legend:
+                plt.subplots_adjust(left=0.032, bottom=0.06, right=0.98, top=0.91, wspace=0.25, hspace=0.25)
+            else:
+                plt.subplots_adjust(left=0.032, bottom=0.1, right=0.98, top=0.95, wspace=0.25, hspace=0.25)
 
             df_unit_fields = df.loc[df['unit'] == unit_index]
             field_row = df_unit_fields.iloc[0]
@@ -4494,25 +4507,16 @@ class StabilityAndLastWallPlots(object):
             spike_timestamps, position_sample_indices, unit_position_sample_wall_indices = \
                 StabilityAndLastWallPlots.get_spikes_and_position(recording, unit, position_sample_wall_indices[animal])
 
-            table_cell_text = [['animal', animal],
-                               ['', ''],
-                               ['animal_unit', str(animal_unit_index)],
-                               ['', ''],
-                               ['animal_fields', ','.join(map(str, df_unit_fields['animal_field']))]]
-
-            axs[i, 0].table(cellText=table_cell_text, cellLoc='left', loc='center left', edges='open')
-            axs[i, 0].axis('off')
-
             ratemap_half_a = unit['analysis']['spatial_ratemaps']['spike_rates_halves']['first']
             ratemap_half_b = unit['analysis']['spatial_ratemaps']['spike_rates_halves']['second']
 
-            SpatialRatemap.plot(ratemap_half_a, spatial_windows['exp_scales_d'], ax=axs[i, 1],
+            SpatialRatemap.plot(ratemap_half_a, spatial_windows['exp_scales_d'], ax=axs[0, 0],
                                 colorbar=True, cmap='jet')
-            SpatialRatemap.plot(ratemap_half_b, spatial_windows['exp_scales_d'], ax=axs[i, 2],
+            SpatialRatemap.plot(ratemap_half_b, spatial_windows['exp_scales_d'], ax=axs[1, 0],
                                 colorbar=True, cmap='jet')
 
             StabilityAndLastWallPlots.plot_spike_plots(
-                axs[i, 3:5], recording,
+                axs[:, 1], recording,
                 spike_timestamps, position_sample_indices,
                 unit_position_sample_wall_indices,
                 legend=legend
@@ -4521,49 +4525,44 @@ class StabilityAndLastWallPlots(object):
                 legend = False
 
             StabilityAndLastWallPlots.plot_both_wall_touch_ratemaps(
-                axs[i, 5:], recording, spike_timestamps, position_sample_indices, unit_position_sample_wall_indices
+                axs[:, 2], recording, spike_timestamps, position_sample_indices, unit_position_sample_wall_indices
             )
 
-            contours = [compute_field_contour(recordings[0].analysis['fields'][i]['ratemap'])
-                        for i in df_unit_fields['animal_field']]
-            contours_spatial_window = \
-                list(spatial_windows['exp_scales_d'][:2]) + list(spatial_windows['exp_scales_d'][2:])[::-1]
-            for contour in contours:
-                for ax in axs[i, 1:]:
-                    SpatialRatemap.plot_contours(
-                        contour, ax, color='green',
-                        ratemap_shape=ratemap_half_a.shape,
-                        spatial_window=contours_spatial_window
-                    )
+            for ax in axs.flatten():
+                ax.axis('off')
+
+            figs.append(fig)
+
+        return figs
 
     @staticmethod
-    def make_figure(all_recordings, df_units, df_fields):
+    def make_figure(all_recordings, df_units, df_fields, df_to_use):
 
-        df = StabilityAndLastWallPlots.get_df_with_place_cell_fields_in_middle(df_units, df_fields)
-        number_of_units = df['unit'].unique().size
+        df = StabilityAndLastWallPlots.get_df_with_place_cell_fields_in_middle(df_units, df_fields, df_to_use)
 
-        fig, axs = plt.subplots(number_of_units, 7, figsize=(30, 3 * number_of_units))
-        plt.subplots_adjust(left=0.025, bottom=0.01, right=0.99, top=0.95, wspace=0.4, hspace=0.01 / number_of_units)
-
-        StabilityAndLastWallPlots.plot(
-            all_recordings, df, axs
+        return StabilityAndLastWallPlots.plot(
+            all_recordings, df
         )
-
-        return fig
 
     @staticmethod
     def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
 
         figure_name = prefix + 'StabilityAndLastWallPlots'
 
+        df_to_use = pd.read_csv(os.path.join(fpath, Params.analysis_path, 'LastWallPlots.csv'))
+
         if verbose:
             print('Writing Figure {}'.format(figure_name))
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        fig = StabilityAndLastWallPlots.make_figure(all_recordings, df_units, df_fields)
-        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
-        plt.close(fig)
+        figs = StabilityAndLastWallPlots.make_figure(all_recordings, df_units, df_fields, df_to_use)
+        os.makedirs(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots'), exist_ok=True)
+        for i, fig in enumerate(figs):
+            fig.savefig(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots', '{}_{}.png'.format(
+                figure_name, i
+            )))
+            plt.close(fig)
 
         if verbose:
             print('Writing Figure {} Done.'.format(figure_name))
@@ -4576,14 +4575,19 @@ class TrajectoryAndSpikePlots(object):
     wall_max_distance = 100
 
     @staticmethod
-    def get_df_with_place_cell_fields_in_good_distances(df_units, df_fields):
+    def get_df_with_place_cell_fields_in_good_distances(df_units, df_fields, df_to_use):
         df = df_fields.merge(df_units[['animal', 'animal_unit', 'category']].copy(deep=True),
                              how='left', on=['animal', 'animal_unit'])
         df = df[(df['category'] == 'place_cell') & (df['experiment_id'] == 'exp_scales_d')]
         idx_close_to_wall = df['peak_nearest_wall'] < TrajectoryAndSpikePlots.wall_proximity_threshold
-        # idx_far_from_wall = (df['peak_nearest_wall'] > TrajectoryAndSpikePlots.wall_distance_threshold) \
-        #                     & (df['peak_nearest_wall'] < TrajectoryAndSpikePlots.wall_max_distance)
-        return df.loc[idx_close_to_wall].copy()
+        df = df.loc[idx_close_to_wall]
+
+        df_to_use['use'] = True
+        df_to_use.rename(columns={'Animal': 'animal', 'Unit': 'animal_unit'}, inplace=True)
+        df = df.merge(df_to_use, how='left', on=['animal', 'animal_unit'])
+        df['use'].fillna(False, inplace=True)
+
+        return df.loc[df['use']].copy()
 
     @staticmethod
     def get_spikes_and_position(recording, unit):
@@ -4631,7 +4635,7 @@ class TrajectoryAndSpikePlots(object):
         ax.set_ylabel('')
 
     @staticmethod
-    def plot(all_recordings, df, axs):
+    def plot(all_recordings, df, n_per_row=4):
 
         animal_recordings = {}
         animal_recording_indices = {}
@@ -4641,8 +4645,15 @@ class TrajectoryAndSpikePlots(object):
                     animal_recordings[recording.info['animal']] = recordings
                     animal_recording_indices[recording.info['animal']] = i_recording
 
-        axs = axs.flatten()
+        figs = []
         for i, unit_index in enumerate(df['unit'].unique()):
+
+            if i % n_per_row == 0:
+                fig, axs = plt.subplots(1, n_per_row, figsize=(15, 3))
+                plt.subplots_adjust(left=0.035, bottom=0.01, right=0.99, top=0.95, wspace=0.4)
+                figs.append(fig)
+                for ax in axs:
+                    ax.axis('off')
 
             df_unit_fields = df.loc[df['unit'] == unit_index]
             field_row = df_unit_fields.iloc[0]
@@ -4656,54 +4667,39 @@ class TrajectoryAndSpikePlots(object):
             spike_timestamps, position_sample_indices = \
                 TrajectoryAndSpikePlots.get_spikes_and_position(recording, unit)
 
-            TrajectoryAndSpikePlots.plot_spike_plots(axs[i], recording, spike_timestamps, position_sample_indices)
+            TrajectoryAndSpikePlots.plot_spike_plots(axs[i % n_per_row], recording, spike_timestamps,
+                                                     position_sample_indices)
 
-            contours = [compute_field_contour(recordings[0].analysis['fields'][i]['ratemap'])
-                        for i in df_unit_fields['animal_field']]
-            contours_spatial_window = \
-                list(spatial_windows['exp_scales_d'][:2]) + list(spatial_windows['exp_scales_d'][2:])[::-1]
-            for contour in contours:
-                SpatialRatemap.plot_contours(
-                    contour, axs[i], color='blue',
-                    ratemap_shape=recording.units[0]['analysis']['spatial_ratemaps']['spike_rates_smoothed'].shape,
-                    spatial_window=contours_spatial_window
-                )
-
-            axs[i].set_title('{} | {}'.format(animal, animal_unit_index))
+        return figs
 
     @staticmethod
-    def make_figure(all_recordings, df_units, df_fields):
+    def make_figure(all_recordings, df_units, df_fields, df_to_use):
 
-        df = TrajectoryAndSpikePlots.get_df_with_place_cell_fields_in_good_distances(df_units, df_fields)
-        number_of_units = df['unit'].unique().size
+        df = TrajectoryAndSpikePlots.get_df_with_place_cell_fields_in_good_distances(df_units, df_fields, df_to_use)
 
-        number_of_rows = number_of_units // 5 + 1
-
-        fig, axs = plt.subplots(number_of_rows, 5, figsize=(25, 4 * number_of_rows))
-        plt.subplots_adjust(left=0.025, bottom=0.01, right=0.99, top=0.95, wspace=0.4, hspace=0.01 / number_of_rows)
-
-        TrajectoryAndSpikePlots.plot(
-            all_recordings, df, axs
+        return TrajectoryAndSpikePlots.plot(
+            all_recordings, df
         )
-
-        return fig
 
     @staticmethod
     def write(fpath, all_recordings, df_units, df_fields, prefix='', verbose=True):
 
         figure_name = prefix + 'TrajectoryAndSpikePlots'
 
+        df_to_use = pd.read_csv(os.path.join(fpath, Params.analysis_path, 'SpikePlots.csv'))
+
         if verbose:
             print('Writing Figure {}'.format(figure_name))
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        fig = TrajectoryAndSpikePlots.make_figure(all_recordings, df_units, df_fields)
-        fig.savefig(os.path.join(paper_figures_path(fpath), '{}.png'.format(figure_name)))
-        plt.close(fig)
-
-        if verbose:
-            print('Writing Figure {} Done.'.format(figure_name))
+        figs = TrajectoryAndSpikePlots.make_figure(all_recordings, df_units, df_fields, df_to_use)
+        os.makedirs(os.path.join(paper_figures_path(fpath), 'TrajectoryAndSpikePlots'), exist_ok=True)
+        for i, fig in enumerate(figs):
+            fig.savefig(os.path.join(paper_figures_path(fpath), 'TrajectoryAndSpikePlots', '{}_{}.png'.format(
+                figure_name, i
+            )))
+            plt.close(fig)
 
 
 def print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields):
