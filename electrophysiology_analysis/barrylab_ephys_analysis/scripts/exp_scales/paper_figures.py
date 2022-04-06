@@ -4477,6 +4477,7 @@ class StabilityAndLastWallPlots(object):
         animal_recordings = {}
         animal_recording_indices = {}
         position_sample_wall_indices = {}
+        output_position_dfs = []
         for recordings in all_recordings:
             for i_recording, recording in enumerate(recordings):
                 if recording.info['experiment_id'] == 'exp_scales_d':
@@ -4485,7 +4486,16 @@ class StabilityAndLastWallPlots(object):
                     position_sample_wall_indices[recording.info['animal']] = \
                         StabilityAndLastWallPlots.position_sample_wall_indices(recording.position['xy'])
 
+                    output_position_df = pd.DataFrame({'x': recording.position['xy'][:, 0],
+                                                       'y': recording.position['xy'][:, 1],
+                                                       'sample_index': np.arange(recording.position['xy'].shape[0])})
+                    output_position_df['animal'] = recording.info['animal']
+                    output_position_dfs.append(output_position_df)
+
+        output_position_df = pd.concat(output_position_dfs, axis=0, ignore_index=True)
+
         figs = []
+        output_spike_dfs = []
         legend = True
         for i, unit_index in enumerate(df['unit'].unique()):
 
@@ -4528,12 +4538,34 @@ class StabilityAndLastWallPlots(object):
                 axs[:, 2], recording, spike_timestamps, position_sample_indices, unit_position_sample_wall_indices
             )
 
+            output_spike_dfs.append(
+                StabilityAndLastWallPlots.construct_dataframe_for_output(
+                    animal, animal_unit_index, spike_timestamps, position_sample_indices,
+                    unit_position_sample_wall_indices
+                )
+            )
+
             for ax in axs.flatten():
                 ax.axis('off')
 
             figs.append(fig)
 
-        return figs
+        output_spike_df = pd.concat(output_spike_dfs, axis=0, ignore_index=True)
+
+        return figs, (output_position_df, output_spike_df)
+
+    @staticmethod
+    def construct_dataframe_for_output(animal, animal_unit, spike_timestamps, position_sample_indices,
+                                       unit_position_sample_wall_indices):
+        df = pd.DataFrame({
+            'spike_timestamps': spike_timestamps,
+            'position_sample_indices': position_sample_indices,
+            'unit_position_sample_wall_indices': unit_position_sample_wall_indices
+        })
+        df['animal'] = animal
+        df['animal_unit'] = animal_unit
+
+        return df
 
     @staticmethod
     def make_figure(all_recordings, df_units, df_fields, df_to_use):
@@ -4556,13 +4588,18 @@ class StabilityAndLastWallPlots(object):
 
         sns.set(context='paper', style='ticks', palette='muted', font_scale=seaborn_font_scale)
 
-        figs = StabilityAndLastWallPlots.make_figure(all_recordings, df_units, df_fields, df_to_use)
+        figs, output_dfs = StabilityAndLastWallPlots.make_figure(all_recordings, df_units, df_fields, df_to_use)
         os.makedirs(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots'), exist_ok=True)
         for i, fig in enumerate(figs):
             fig.savefig(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots', '{}_{}.png'.format(
                 figure_name, i
             )))
             plt.close(fig)
+
+        output_dfs[0].to_parquet(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots',
+                                              'positions.parquet'))
+        output_dfs[1].to_parquet(os.path.join(paper_figures_path(fpath), 'StabilityAndLastWallPlots',
+                                              'spikes.parquet'))
 
         if verbose:
             print('Writing Figure {} Done.'.format(figure_name))
@@ -4786,70 +4823,70 @@ def link_df_units_and_df_fields_with_common_unit(df_units, df_fields):
 
 def main(fpath):
 
-    all_recordings = load_data_preprocessed_if_available(fpath, recompute=False, verbose=True)
-
-    # Rename experiment name in  last recording so it would not have the same as the first
-    for recordings in all_recordings:
-        snippets.rename_last_recording_a2(recordings)
-
-    for recordings in all_recordings:
-        create_df_fields_for_recordings(recordings)
-
-    for recordings in all_recordings:
-        create_unit_data_frames_for_recordings(recordings)
-
-    df_fields = get_full_df_fields(all_recordings)
-    df_units = get_full_df_units(all_recordings)
-    link_df_units_and_df_fields_with_common_unit(df_units, df_fields)
-
-    df_fields.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_fields.p'))
-    df_units.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_units.p'))
-
-    with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'wb') as pfile:
-        pickle.dump(all_recordings, pfile)
-
-    # # Use this instead if data has already been loaded once
-    # with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'rb') as pfile:
-    #     all_recordings = pickle.load(pfile)
+    # all_recordings = load_data_preprocessed_if_available(fpath, recompute=False, verbose=True)
     #
-    # df_units = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_units.p'))
-    # df_fields = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_fields.p'))
+    # # Rename experiment name in  last recording so it would not have the same as the first
+    # for recordings in all_recordings:
+    #     snippets.rename_last_recording_a2(recordings)
+    #
+    # for recordings in all_recordings:
+    #     create_df_fields_for_recordings(recordings)
+    #
+    # for recordings in all_recordings:
+    #     create_unit_data_frames_for_recordings(recordings)
+    #
+    # df_fields = get_full_df_fields(all_recordings)
+    # df_units = get_full_df_units(all_recordings)
+    # link_df_units_and_df_fields_with_common_unit(df_units, df_fields)
+    #
+    # df_fields.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_fields.p'))
+    # df_units.to_pickle(os.path.join(fpath, Params.analysis_path, 'df_units.p'))
+    #
+    # with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'wb') as pfile:
+    #     pickle.dump(all_recordings, pfile)
+
+    # Use this instead if data has already been loaded once
+    with open(os.path.join(fpath, 'Analysis', 'all_recordings.p'), 'rb') as pfile:
+        all_recordings = pickle.load(pfile)
+
+    df_units = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_units.p'))
+    df_fields = pd.read_pickle(os.path.join(fpath, 'Analysis', 'df_fields.p'))
 
     # Compute and write figures
 
-    ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
-    FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
-    IntraTrialCorrelations.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
-    PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
-    FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
-    Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
-    environment_field_density_model_parameters = \
-        FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2E_')
-    ConservationOfFieldFormationPropensity.write(fpath, df_units, df_fields,
-                                                 environment_field_density_model_parameters, prefix='Figure_2_sup_2_')
-    gamma_model_fit = \
-        FieldsPerCellAcrossEnvironments.write(fpath, df_units, df_fields, environment_field_density_model_parameters,
-                                              prefix='Figure_2_sup_3_')
-    PlaceCellsDetectedAcrossEnvironments.write(fpath, df_units, df_fields,
-                                               environment_field_density_model_parameters, gamma_model_fit,
-                                               prefix='Figure_2D_')
-    FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
-    FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
-    FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
-    AverageActivity.write(fpath, all_recordings, prefix='Figure_4AB_')
-    FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_4C_')
-    FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_4D_')
-    FieldDensityByDwell.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_1_')
-    FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
-    AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_4_sup_1_')
-    InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_4_sup_2_')
-    FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
-    FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
-    FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
+    # ExampleUnit.write(fpath, all_recordings, df_units, prefix='Figure_1_')
+    # FieldDetectionMethod.write(fpath, all_recordings, df_units, prefix='Figure_1_sup_2_')
+    # IntraTrialCorrelations.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_1_sup_3_')
+    # PlaceCellAndFieldCounts.write(fpath, df_units, df_fields, prefix='Figure_2AB_')
+    # FieldsPerCellAcrossEnvironmentsSimple.write(fpath, df_units, df_fields, prefix='Figure_2C_')
+    # Remapping.write(fpath, all_recordings, prefix='Figure_2_sup_1_')
+    # environment_field_density_model_parameters = \
+    #     FieldsDetectedAcrossEnvironments.write(fpath, df_units, df_fields, prefix='Figure_2E_')
+    # ConservationOfFieldFormationPropensity.write(fpath, df_units, df_fields,
+    #                                              environment_field_density_model_parameters, prefix='Figure_2_sup_2_')
+    # gamma_model_fit = \
+    #     FieldsPerCellAcrossEnvironments.write(fpath, df_units, df_fields, environment_field_density_model_parameters,
+    #                                           prefix='Figure_2_sup_3_')
+    # PlaceCellsDetectedAcrossEnvironments.write(fpath, df_units, df_fields,
+    #                                            environment_field_density_model_parameters, gamma_model_fit,
+    #                                            prefix='Figure_2D_')
+    # FieldDensity.write(fpath, df_units, df_fields, prefix='Figure_3A_')
+    # FieldSize.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3B_')
+    # FieldWidth.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3CD_')
+    # AverageActivity.write(fpath, all_recordings, prefix='Figure_4AB_')
+    # FiringRateDistribution.write(fpath, all_recordings, prefix='Figure_4C_')
+    # FieldAreaDistribution.write(fpath, df_units, df_fields, prefix='Figure_4D_')
+    # FieldDensityByDwell.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_1_')
+    # FieldWidthAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_3_sup_2_')
+    # AverageActivityAll.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_4_sup_1_')
+    # InterneuronMeanRate.write(fpath, all_recordings, prefix='Figure_4_sup_2_')
+    # FiringRateChange.write(fpath, all_recordings, df_units, prefix='Figure_5AB_')
+    # FiringRateChangeAll.write(fpath, all_recordings, prefix='Figure_5_sup_1_')
+    # FiringRateChangeAndTheta.write(fpath, prefix='Figure_R1_')
     StabilityAndLastWallPlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R2_')
-    TrajectoryAndSpikePlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R3_')
-
-    print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
+    # TrajectoryAndSpikePlots.write(fpath, all_recordings, df_units, df_fields, prefix='Figure_R3_')
+    #
+    # print_field_count_per_cell_correlation_with_clustering_quality(df_units, df_fields)
 
 
 if __name__ == '__main__':
